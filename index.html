@@ -2225,85 +2225,189 @@ async function exportarCompras(linhas){
 
 /* ======================= FICHA DO PRODUTO ======================= */
 
+/* ---- ficha do produto: cadastro e análise na mesma tela ---- */
 function fichaProduto(p){
-  const md = el("div",{class:"modal", style:"max-width:720px"});
+  const novo = !p;
+  const md = el("div",{class:"modal", style:"max-width:760px"});
   const s = calcSaldos();
   const { linhas, dias } = analiseProdutos();
-  const A = linhas.find(L => L.p.id === p.id) || { diario:0, cobertura:0, saldo:0, min:0, lead:Number(state.config.leadTime)||15, comprar:0, status:"ok", porDia:{} };
+  const A = (!novo && linhas.find(L => L.p.id === p.id)) ||
+            { diario:0, cobertura:0, saldo:0, min:0, comprar:0, status:"ok", porDia:{} };
   const info = STATUS_INFO[A.status];
 
-  md.appendChild(el("div",{style:"display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap"},
-    thumb(p, 56),
-    el("div",{style:"min-width:0"},
+  /* ---------- campos do cadastro ---------- */
+  const fCod  = el("input",{value: novo ? "" : (p.codigo||p.id), placeholder:"1015", disabled: novo ? false : "disabled"});
+  const fNome = el("input",{value: novo ? "" : (p.nome||""), placeholder:"Algodão Doce Tutti Frutti 35g"});
+  const fCat  = el("input",{value: novo ? "" : (p.categoria||""), placeholder:"Algodão doce", list:"catlist"});
+  const dl    = el("datalist",{id:"catlist"}, categorias().map(c => el("option",{value:c})));
+  const fTipo = el("select",null,
+    el("option",{value:"granel"},"Granel — controlado em kg"),
+    el("option",{value:"item"},"Item embalado — controlado em unidade"));
+  fTipo.value = novo ? "item" : (p.tipo||"granel");
+  const fCusto = el("input",{value: novo ? "" : String(p.custo||"").replace(".",","), placeholder:"6,20", inputmode:"decimal"});
+  const fCx    = el("input",{value: (!novo && p.unPorCaixa) ? String(p.unPorCaixa).replace(".",",") : "", placeholder:"6", inputmode:"decimal"});
+  const fPeso  = el("input",{value: (!novo && p.pesoUn) ? String(p.pesoUn).replace(".",",") : "", placeholder:"0,500", inputmode:"decimal"});
+  const fMin   = el("input",{value: (!novo && p.estoqueMin) ? String(p.estoqueMin).replace(".",",") : "", placeholder:"12", inputmode:"decimal"});
+  const fAtivo = el("input",{type:"checkbox"}); fAtivo.checked = novo ? true : p.ativo !== false;
+
+  /* ---------- foto ---------- */
+  let foto = (!novo && p.foto) || "";
+  const previa  = el("div");
+  const arquivo = el("input",{type:"file", accept:"image/*", style:"display:none"});
+  const desenhaFoto = () => {
+    previa.innerHTML = "";
+    previa.appendChild(el("div",{style:"display:flex;gap:12px;align-items:center;flex-wrap:wrap"},
+      thumb({ nome: fNome.value || "?", foto }, 64),
+      el("div",{style:"display:flex;gap:8px;flex-wrap:wrap"},
+        el("button",{class:"btn sm", type:"button", onclick:()=>arquivo.click()}, foto ? "Trocar imagem" : "Escolher imagem"),
+        foto ? el("button",{class:"btn sm ghost", type:"button", onclick:()=>{ foto=""; desenhaFoto(); }},"Remover") : null),
+      el("span",{style:"font-size:11.5px;color:var(--ink-3);flex:1;min-width:160px"},
+        "No celular dá para tirar a foto na hora.")));
+  };
+  arquivo.addEventListener("change", async ()=>{
+    const f = arquivo.files && arquivo.files[0]; if (!f) return;
+    try { foto = await lerImagem(f); desenhaFoto(); }
+    catch(err){ toast(err.message || "Não deu para usar essa imagem."); }
+    arquivo.value = "";
+  });
+
+  /* ---------- cabeçalho ---------- */
+  const cab = el("div",{style:"display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:4px"});
+  if (novo){
+    cab.appendChild(el("div",null, el("h2",null,"Novo produto"),
+      el("p",{class:"lead", style:"margin-bottom:0"},"Granel é controlado em kg; item embalado, em unidade. As conversões deixam contar por caixa ou por peso.")));
+  } else {
+    cab.appendChild(thumb(p, 56));
+    cab.appendChild(el("div",{style:"min-width:0"},
       el("h2",null, p.nome),
       el("p",{class:"lead", style:"margin-bottom:0"},
-        (p.codigo||p.id) + " · " + (isGranel(p) ? "granel, controlado em kg" : "item embalado, controlado em unidade") + " · " + (p.categoria||CAT_FALLBACK))),
-    el("div",{class:"spacer"}),
-    el("span",{class:"chip "+info.chip, style:"margin-top:6px"}, info.label)));
-
-  const fechado = s.fechado[p.id];
-  const balcao = isGranel(p) ? null : (s.balcao[p.id]||0);
-  md.appendChild(el("div",{class:"tiles", style:"margin:14px 0;grid-template-columns:repeat(auto-fit,minmax(128px,1fr))"},
-    tile("No depósito", fechado === undefined ? "—" : fmtBase(p,fechado), baseUn(p), fechado === undefined ? "nunca contado" : "estoque fechado"),
-    isGranel(p)
-      ? tile("No balcão", "—", "", "vira "+POOL_NOME)
-      : tile("No balcão", nUn(balcao), "un", "por SKU"),
-    tile("Consumo", A.diario > 0 ? fmtBase(p,A.diario) : "—", A.diario > 0 ? baseUn(p)+"/dia" : "", "média de "+dias+" dias"),
-    tile("Cobertura", diasTxt(A.cobertura), "", "no ritmo atual", (A.status==="critico"||A.status==="zerado") ? "alert" : null)));
-
-  /* estoque mínimo e prazo próprio */
-  const fMin = el("input",{inputmode:"decimal", value: p.estoqueMin ? String(p.estoqueMin).replace(".",",") : "", placeholder: isGranel(p) ? "5,000" : "12"});
-  const fLead = el("input",{type:"number", min:"0", value: p.leadTime ? String(p.leadTime) : "", placeholder:String(state.config.leadTime||15)});
-  md.appendChild(el("div",{class:"card", style:"padding:14px 15px;margin-bottom:14px"},
-    el("div",{class:"grid2"},
-      el("div",{class:"field", style:"margin:0"},
-        el("label",null,"Estoque mínimo ("+baseUn(p)+")"), fMin,
-        el("span",{class:"hint"},"abaixo disso o produto entra como Repor já")),
-      el("div",{class:"field", style:"margin:0"},
-        el("label",null,"Prazo de entrega próprio (dias)"), fLead,
-        el("span",{class:"hint"},"vazio usa o prazo geral, hoje "+(state.config.leadTime||15)+" dias"))),
-    el("div",{style:"display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap"},
-      el("button",{class:"btn sm primary", onclick:async(e)=>{
-        e.currentTarget.disabled = true;
-        await salvarProduto(Object.assign({}, p, { estoqueMin: parseNum(fMin.value)||0, leadTime: Number(fLead.value)||0 }));
-        toast("Parâmetros salvos."); closeModal();
-      }},"Salvar parâmetros"),
-      A.comprar > 0.0005
-        ? el("span",{style:"font-size:13px;color:var(--ink-2)"},
-            "Sugestão de compra: ", el("strong",null, fmtBase(p,A.comprar)+" "+baseUn(p)),
-            " (" + nBRL(A.comprar*(Number(p.custo)||0)) + ")")
-        : el("span",{style:"font-size:13px;color:var(--ink-3)"},"Sem necessidade de compra no momento."))));
-
-  /* consumo por data */
-  md.appendChild(graficoConsumo(p, A, dias));
-
-  /* histórico */
-  const base = state.demo ? demoMovimentos() : state.movimentos;
-  const hist = [];
-  for (const m of base){
-    const q = Number((m.itens||{})[p.id])||0; if (!q) continue;
-    hist.push({ data: dataDoMov(m), motivo: motivoLabel(m.direcao, m.motivo), dir: m.direcao, q, resp: m.responsavel });
+        (p.codigo||p.id) + " · " + (isGranel(p) ? "granel, em kg" : "item embalado, em unidade") + " · " + (p.categoria||CAT_FALLBACK))));
+    cab.appendChild(el("div",{class:"spacer"}));
+    cab.appendChild(el("span",{class:"chip "+info.chip, style:"margin-top:6px"}, info.label));
   }
-  hist.sort((a,b)=>b.data.localeCompare(a.data));
-  md.appendChild(el("h3",{style:"font-size:14px;margin:16px 0 8px"},"Movimentos recentes"));
-  if (!hist.length){
-    md.appendChild(el("div",{class:"empty", style:"padding:22px"}, el("p",{style:"margin:0"},"Nenhum movimento lançado para este produto ainda.")));
-  } else {
-    const tb = el("tbody");
-    hist.slice(0,40).forEach(h => tb.appendChild(el("tr",null,
-      el("td",{class:"code"}, dataBR(h.data)),
-      el("td",null, h.motivo, h.resp ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, h.resp) : null),
-      el("td",{class:"r num", style:"color:"+(h.dir==="entrada"?"var(--ok)":h.dir==="saida"?"var(--crit)":"var(--violet)")},
-        (h.dir==="entrada"?"+":h.dir==="saida"?"−":"→")+" "+fmtBase(p,h.q)+" "+baseUn(p)))));
-    md.appendChild(el("div",{class:"table-wrap", style:"max-height:250px;overflow-y:auto"},
-      el("table",{style:"min-width:380px"},
-        el("thead",null,el("tr",null,el("th",null,"Data"),el("th",null,"Motivo"),el("th",{class:"r"},"Qtde"))), tb)));
+  md.appendChild(cab);
+
+  /* ---------- números, só para produto que já existe ---------- */
+  if (!novo){
+    const fechado = s.fechado[p.id];
+    const balcao = isGranel(p) ? null : (s.balcao[p.id]||0);
+    md.appendChild(el("div",{class:"tiles", style:"margin:14px 0;grid-template-columns:repeat(auto-fit,minmax(128px,1fr))"},
+      tile("No depósito", fechado === undefined ? "—" : fmtBase(p,fechado), baseUn(p), fechado === undefined ? "nunca contado" : "estoque fechado"),
+      isGranel(p) ? tile("No balcão","—","","vira "+POOL_NOME)
+                  : tile("No balcão", nUn(balcao), "un", "por SKU"),
+      tile("Consumo", A.diario > 0 ? fmtBase(p,A.diario) : "—", A.diario > 0 ? baseUn(p)+"/dia" : "", "média de "+dias+" dias"),
+      tile("Cobertura", diasTxt(A.cobertura), "", "no ritmo atual", (A.status==="critico"||A.status==="zerado") ? "alert" : null)));
+    if (A.comprar > 0.0005){
+      md.appendChild(el("div",{class:"banner"}, el("span",{class:"tag"},"comprar"),
+        el("p",null,"Sugestão de compra: " + fmtBase(p,A.comprar) + " " + baseUn(p) +
+          " (" + nBRL(A.comprar*(Number(p.custo)||0)) + "), pelo prazo de entrega de " +
+          (Number(state.config.leadTime)||15) + " dias definido na aba Inteligência.")));
+    }
   }
 
+  /* ---------- formulário ---------- */
+  const linhaCx   = el("div",{class:"field"}, el("label",null,"Unidades por caixa"), fCx,
+                      el("span",{class:"hint"},"1 caixa de algodão doce = 6 unidades"));
+  const linhaPeso = el("div",{class:"field"}, el("label",null,"Peso por unidade (kg)"), fPeso,
+                      el("span",{class:"hint"},"banana GG 500 g = 0,500 — permite contar em kg"));
+  const linhaMin  = el("div",{class:"field"}, el("label",null,"Estoque mínimo"), fMin,
+                      el("span",{class:"hint"},"abaixo disso entra como Repor já"));
+  function ajustaTipo(){
+    const gran = fTipo.value === "granel";
+    linhaCx.style.display = gran ? "none" : "flex";
+    linhaPeso.querySelector("label").textContent = gran ? "Peso da embalagem fechada (kg)" : "Peso por unidade (kg)";
+    linhaPeso.querySelector(".hint").textContent = gran
+      ? "saco fechado de 2 kg = 2,000 — permite contar por embalagem"
+      : "banana GG 500 g = 0,500 — permite contar em kg";
+    linhaMin.querySelector("label").textContent = "Estoque mínimo (" + (gran ? "kg" : "un") + ")";
+    fMin.placeholder = gran ? "5,000" : "12";
+  }
+  fTipo.addEventListener("change", ajustaTipo);
+
+  md.appendChild(el("h3",{style:"font-size:14px;margin:16px 0 8px"},"Cadastro"));
+  md.appendChild(el("div",{class:"grid2"},
+    el("div",{class:"field"}, el("label",null,"Código no Degust"), fCod,
+      el("span",{class:"hint"}, novo ? "é o que casa a importação de vendas" : "não pode ser alterado")),
+    el("div",{class:"field"}, el("label",null,"Custo"), fCusto)));
+  md.appendChild(el("div",{class:"field"}, el("label",null,"Nome"), fNome));
+  md.appendChild(el("div",{class:"grid2"},
+    el("div",{class:"field"}, el("label",null,"Categoria"), fCat, dl),
+    el("div",{class:"field"}, el("label",null,"Tipo"), fTipo)));
+  md.appendChild(el("div",{class:"grid3"}, linhaCx, linhaPeso, linhaMin));
+  ajustaTipo();
+
+  desenhaFoto();
+  md.appendChild(el("div",{class:"field"}, el("label",null,"Imagem do produto"), previa, arquivo));
+  md.appendChild(el("label",{class:"switch"}, fAtivo, "Produto ativo (aparece na contagem e nos relatórios)"));
+
+  /* ---------- códigos conciliados ---------- */
+  let alts = (!novo && Array.isArray(p.codigosAlt)) ? p.codigosAlt.slice() : [];
+  if (!novo){
+    const chips = el("div",{style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px"});
+    const desenhaAlts = () => {
+      chips.innerHTML = "";
+      if (!alts.length){ chips.appendChild(el("span",{style:"font-size:12.5px;color:var(--ink-3)"},"Nenhum código conciliado.")); return; }
+      alts.forEach((a,i) => chips.appendChild(el("span",{class:"chip mute", style:"display:inline-flex;gap:5px;align-items:center"},
+        a, el("button",{type:"button", title:"remover",
+          style:"border:0;background:none;cursor:pointer;color:var(--ink-3);padding:0;font-size:14px;line-height:1",
+          onclick:()=>{ alts.splice(i,1); desenhaAlts(); }},"×"))));
+    };
+    desenhaAlts();
+    md.appendChild(el("div",{class:"field", style:"margin-top:10px"},
+      el("label",null,"Códigos conciliados"), chips,
+      el("span",{class:"hint"},"Outros códigos do Degust que caem neste mesmo produto.")));
+  }
+
+  /* ---------- consumo e histórico ---------- */
+  if (!novo){
+    md.appendChild(graficoConsumo(p, A, dias));
+    const base = state.demo ? demoMovimentos() : state.movimentos;
+    const hist = [];
+    for (const m of base){
+      const q = Number((m.itens||{})[p.id])||0; if (!q) continue;
+      hist.push({ data: dataDoMov(m), motivo: motivoLabel(m.direcao, m.motivo), dir: m.direcao, q, resp: m.responsavel });
+    }
+    hist.sort((a,b)=>b.data.localeCompare(a.data));
+    md.appendChild(el("h3",{style:"font-size:14px;margin:16px 0 8px"},"Movimentos recentes"));
+    if (!hist.length){
+      md.appendChild(el("div",{class:"empty", style:"padding:22px"}, el("p",{style:"margin:0"},"Nenhum movimento lançado para este produto ainda.")));
+    } else {
+      const tb = el("tbody");
+      hist.slice(0,40).forEach(h => tb.appendChild(el("tr",null,
+        el("td",{class:"code"}, dataBR(h.data)),
+        el("td",null, h.motivo, h.resp ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, h.resp) : null),
+        el("td",{class:"r num", style:"color:"+(h.dir==="entrada"?"var(--ok)":h.dir==="saida"?"var(--crit)":"var(--violet)")},
+          (h.dir==="entrada"?"+":h.dir==="saida"?"−":"→")+" "+fmtBase(p,h.q)+" "+baseUn(p)))));
+      md.appendChild(el("div",{class:"table-wrap", style:"max-height:250px;overflow-y:auto"},
+        el("table",{style:"min-width:380px"},
+          el("thead",null,el("tr",null,el("th",null,"Data"),el("th",null,"Motivo"),el("th",{class:"r"},"Qtde"))), tb)));
+    }
+  }
+
+  /* ---------- ações ---------- */
   md.appendChild(el("div",{class:"modal-actions"},
-    el("button",{class:"btn", onclick:()=>{ closeModal(); modalProduto(p); }},"Editar cadastro"),
+    !novo ? el("button",{class:"btn danger", onclick:async()=>{
+      if (!confirm("Excluir " + p.nome + " do cadastro? As contagens antigas mantêm o histórico.")) return;
+      await removerProduto(p.id); closeModal(); toast("Produto excluído.");
+    }},"Excluir") : null,
     el("div",{class:"spacer"}),
-    el("button",{class:"btn ghost", onclick:closeModal},"Fechar")));
+    el("button",{class:"btn ghost", onclick:closeModal},"Fechar"),
+    el("button",{class:"btn primary", onclick:async(e)=>{
+      const nome = fNome.value.trim();
+      if (!nome){ toast("Dê um nome ao produto."); fNome.focus(); return; }
+      const cod = fCod.value.trim() || slug(nome);
+      e.currentTarget.disabled = true;
+      await salvarProduto({
+        id: novo ? slug(cod) : p.id, codigo: cod, nome,
+        categoria: fCat.value.trim() || CAT_FALLBACK, tipo: fTipo.value,
+        custo: parseNum(fCusto.value) || 0,
+        unPorCaixa: parseNum(fCx.value) || 0, pesoUn: parseNum(fPeso.value) || 0,
+        estoqueMin: parseNum(fMin.value) || 0,
+        codigosAlt: alts, foto,
+        ativo: fAtivo.checked, criadoEm: novo ? null : p.criadoEm,
+      });
+      closeModal(); toast(novo ? "Produto cadastrado." : "Produto salvo.");
+    }}, novo ? "Cadastrar" : "Salvar")));
   openModal(md);
 }
 
@@ -2672,7 +2776,7 @@ function viewProdutos(){
         : state.produtos.length+" SKUs · "+produtosAtivos().filter(isGranel).length+" granel · "+produtosAtivos().filter(p=>!isGranel(p)).length+" itens embalados · "+state.produtos.filter(p=>p.ativo===false).length+" inativos")),
     el("div",{class:"spacer"}),
     el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
-    el("button",{class:"btn primary", onclick:()=>modalProduto(null)},"Novo produto")));
+    el("button",{class:"btn primary", onclick:()=>fichaProduto(null)},"Novo produto")));
 
   if (!state.produtos.length){
     box.appendChild(el("div",{class:"empty"},
@@ -2693,7 +2797,7 @@ function viewProdutos(){
     if (Number(p.unPorCaixa)>0) conv.push(nUn(p.unPorCaixa)+" un/cx");
     if (Number(p.pesoUn)>0) conv.push(nKg1(p.pesoUn)+" kg/"+(isGranel(p)?"emb":"un"));
     if ((p.codigosAlt||[]).length) conv.push("concilia "+p.codigosAlt.join(", "));
-    tbody.appendChild(el("tr",null,
+    const tr = el("tr",null,
       el("td",{class:"code"}, p.codigo || p.id),
       el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"}, thumb(p, 34),
         el("div",null, el("div",{class:"pname"}, p.nome),
@@ -2701,9 +2805,10 @@ function viewProdutos(){
       el("td",null, isGranel(p) ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
       el("td",{class:"r num"}, nBRL(p.custo||0), el("span",{class:"unit"},"/"+baseUn(p))),
       el("td",null, p.ativo === false ? el("span",{class:"chip mute"},"inativo") : el("span",{class:"chip ok"},"ativo")),
-      el("td",{class:"r", style:"white-space:nowrap"},
-        el("button",{class:"btn sm ghost", style:"margin-right:4px", onclick:()=>fichaProduto(p)},"Ficha"),
-        el("button",{class:"btn sm ghost", onclick:()=>modalProduto(p)},"Editar"))));
+      el("td",{class:"r"}, el("button",{class:"btn sm ghost", onclick:()=>fichaProduto(p)},"Abrir")));
+    tr.style.cursor = "pointer";
+    tr.addEventListener("click", e => { if (!e.target.closest("button")) fichaProduto(p); });
+    tbody.appendChild(tr);
   }
   box.appendChild(el("div",{class:"table-wrap"},
     el("table",null,
@@ -2845,104 +2950,6 @@ function closeModal(){
   if (!root.children.length) document.removeEventListener("keydown", escClose);
 }
 function escClose(e){ if (e.key === "Escape") closeModal(); }
-
-function modalProduto(p){
-  const isNew = !p;
-  const md = el("div",{class:"modal"});
-  md.appendChild(el("h2",null, isNew ? "Novo produto" : "Editar produto"));
-  md.appendChild(el("p",{class:"lead"},"Granel é controlado em kg. Item embalado é controlado em unidade — e as conversões abaixo deixam você contar por caixa ou por peso."));
-
-  const fCod = el("input",{value: p ? (p.codigo||p.id) : "", placeholder:"1015", disabled: !isNew ? "disabled" : false});
-  const fNome = el("input",{value: p ? p.nome||"" : "", placeholder:"Algodão Doce Tutti Frutti 35g"});
-  const fCat = el("input",{value: p ? p.categoria||"" : "", placeholder:"Algodão doce", list:"catlist"});
-  const dl = el("datalist",{id:"catlist"}, categorias().map(c => el("option",{value:c})));
-  const fTipo = el("select",null, el("option",{value:"granel"},"Granel — controlado em kg"), el("option",{value:"item"},"Item embalado — controlado em unidade"));
-  fTipo.value = p ? (p.tipo||"granel") : "item";
-  const fCusto = el("input",{value: p ? String(p.custo||"").replace(".",",") : "", placeholder:"6,20", inputmode:"decimal"});
-  const fCx = el("input",{value: p && p.unPorCaixa ? String(p.unPorCaixa).replace(".",",") : "", placeholder:"6", inputmode:"decimal"});
-  const fPeso = el("input",{value: p && p.pesoUn ? String(p.pesoUn).replace(".",",") : "", placeholder:"0,500", inputmode:"decimal"});
-  const fAtivo = el("input",{type:"checkbox"}); fAtivo.checked = p ? p.ativo !== false : true;
-
-  const linhaCx = el("div",{class:"field"}, el("label",null,"Unidades por caixa"), fCx, el("span",{class:"hint"},"1 caixa de algodão doce = 6 unidades"));
-  const linhaPeso = el("div",{class:"field"}, el("label",null,"Peso por unidade (kg)"), fPeso, el("span",{class:"hint"},"banana GG 500 g = 0,500 — permite contar em kg"));
-  function ajustaTipo(){
-    const gran = fTipo.value === "granel";
-    linhaCx.style.display = gran ? "none" : "flex";
-    linhaPeso.querySelector("label").textContent = gran ? "Peso da embalagem fechada (kg)" : "Peso por unidade (kg)";
-    linhaPeso.querySelector(".hint").textContent = gran ? "saco/caixa fechada de 2 kg = 2,000 — permite contar por embalagem" : "banana GG 500 g = 0,500 — permite contar em kg";
-  }
-  fTipo.addEventListener("change", ajustaTipo);
-
-  md.appendChild(el("div",{class:"grid2"},
-    el("div",{class:"field"}, el("label",null,"Código no Degust"), fCod, el("span",{class:"hint"}, isNew ? "é o que casa a importação de vendas" : "não pode ser alterado")),
-    el("div",{class:"field"}, el("label",null,"Custo"), fCusto)));
-  md.appendChild(el("div",{class:"field"}, el("label",null,"Nome"), fNome));
-  md.appendChild(el("div",{class:"grid2"},
-    el("div",{class:"field"}, el("label",null,"Categoria"), fCat, dl),
-    el("div",{class:"field"}, el("label",null,"Tipo"), fTipo)));
-  md.appendChild(el("div",{class:"grid2"}, linhaCx, linhaPeso));
-  ajustaTipo();
-
-  /* foto do produto */
-  let foto = (p && p.foto) || "";
-  const previa = el("div");
-  const arquivo = el("input",{type:"file", accept:"image/*", style:"display:none"});
-  const desenhaFoto = () => {
-    previa.innerHTML = "";
-    previa.appendChild(el("div",{style:"display:flex;gap:12px;align-items:center;flex-wrap:wrap"},
-      thumb({ nome: fNome.value || "?", foto }, 64),
-      el("div",{style:"display:flex;gap:8px;flex-wrap:wrap"},
-        el("button",{class:"btn sm", type:"button", onclick:()=>arquivo.click()}, foto ? "Trocar imagem" : "Escolher imagem"),
-        foto ? el("button",{class:"btn sm ghost", type:"button", onclick:()=>{ foto = ""; desenhaFoto(); }},"Remover") : null),
-      el("span",{style:"font-size:11.5px;color:var(--ink-3);flex:1;min-width:170px"},
-        "No celular dá para tirar a foto na hora. A imagem é reduzida automaticamente.")));
-  };
-  arquivo.addEventListener("change", async ()=>{
-    const f = arquivo.files && arquivo.files[0]; if (!f) return;
-    try { foto = await lerImagem(f); desenhaFoto(); }
-    catch(err){ toast(err.message || "Não deu para usar essa imagem."); }
-    arquivo.value = "";
-  });
-  desenhaFoto();
-  md.appendChild(el("div",{class:"field", style:"margin-top:6px"}, el("label",null,"Imagem do produto"), previa, arquivo));
-
-  let alts = p && Array.isArray(p.codigosAlt) ? p.codigosAlt.slice() : [];
-  if (!isNew){
-    const chips = el("div",{style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px"});
-    const desenhaAlts = () => {
-      chips.innerHTML = "";
-      if (!alts.length){ chips.appendChild(el("span",{style:"font-size:12.5px;color:var(--ink-3)"},"Nenhum código conciliado.")); return; }
-      alts.forEach((a,i) => chips.appendChild(el("span",{class:"chip mute", style:"display:inline-flex;gap:5px;align-items:center"},
-        a, el("button",{type:"button", style:"border:0;background:none;cursor:pointer;color:var(--ink-3);padding:0;font-size:14px;line-height:1",
-          title:"remover", onclick:()=>{ alts.splice(i,1); desenhaAlts(); }},"×"))));
-    };
-    desenhaAlts();
-    md.appendChild(el("div",{class:"field", style:"margin-top:10px"},
-      el("label",null,"Códigos conciliados"), chips,
-      el("span",{class:"hint"},"Outros códigos do Degust que caem neste mesmo produto.")));
-  }
-  md.appendChild(el("label",{class:"switch", style:"margin-top:4px"}, fAtivo, "Produto ativo (aparece na contagem)"));
-
-  md.appendChild(el("div",{class:"modal-actions"},
-    !isNew ? el("button",{class:"btn danger", onclick:async()=>{
-      if (!confirm("Excluir "+p.nome+" do cadastro? As contagens antigas mantêm o histórico.")) return;
-      await removerProduto(p.id); closeModal(); toast("Produto excluído.");
-    }},"Excluir") : null,
-    el("div",{class:"spacer"}),
-    el("button",{class:"btn ghost", onclick:closeModal},"Cancelar"),
-    el("button",{class:"btn primary", onclick:async()=>{
-      const nome = fNome.value.trim();
-      if (!nome){ toast("Dê um nome ao produto."); fNome.focus(); return; }
-      const cod = fCod.value.trim() || slug(nome);
-      await salvarProduto({ id: p ? p.id : slug(cod), codigo:cod, nome, categoria: fCat.value.trim()||CAT_FALLBACK,
-        tipo: fTipo.value, custo: parseNum(fCusto.value)||0,
-        unPorCaixa: parseNum(fCx.value)||0, pesoUn: parseNum(fPeso.value)||0,
-        estoqueMin: p ? p.estoqueMin : 0, leadTime: p ? p.leadTime : 0, foto,
-        codigosAlt: alts, ativo: fAtivo.checked, criadoEm: p ? p.criadoEm : null });
-      closeModal(); toast(isNew ? "Produto cadastrado." : "Produto atualizado.");
-    }}, isNew ? "Cadastrar" : "Salvar")));
-  openModal(md);
-}
 
 function parseImportProdutos(txt){
   const linhas = txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
