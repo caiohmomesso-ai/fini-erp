@@ -15,7 +15,7 @@ O app é **um arquivo só** (`index.html`). Não tem build, não tem npm, não t
 | **Relatórios** | O que mais e o que menos sai, e a saída dia a dia separada por motivo. |
 | **Inteligência** | Consumo médio, quantos dias de estoque restam e quanto comprar considerando o prazo do fornecedor. |
 | **Contagem** | Contagem do depósito e do balcão, na mão ou colando planilha, com apuração de diferença antes de virar saldo. |
-| **Produtos** | Catálogo, importação em massa, conciliação de códigos do Degust. |
+| **Produtos** | Catálogo, foto por produto, importação em massa, conciliação de códigos do Degust. |
 
 ### Duas regras que definem o modelo
 
@@ -104,12 +104,14 @@ Abra o repositório no GitHub, clique no `index.html`, no ícone de lápis, cole
 
 | Coleção | Documento |
 |---|---|
-| `produtos` | `{codigo, nome, categoria, tipo, custo, unPorCaixa, pesoUn, codigosAlt, estoqueMin, leadTime, ativo}` |
+| `produtos` | `{codigo, nome, categoria, tipo, custo, unPorCaixa, pesoUn, codigosAlt, estoqueMin, leadTime, foto, ativo}` |
 | `contagens` | `{tipo, status, itens:{sku: qtd}, data, criadoEm, aplicadaEm, responsavel}` |
 | `movimentos` | `{direcao, motivo, local, itens:{sku: qtd}, granelKg, data, criadoEm, responsavel, origem}` |
 | `config` | `{leadTime, coberturaAlvo, janela}` |
 
 Quantidades sempre na unidade base: **kg** para granel, **unidade** para item. As conversões de caixa e peso acontecem na digitação.
+
+**Imagens.** A foto do produto é guardada dentro do próprio registro, já reduzida para no máximo 480 px e cerca de 80 KB. Não existe serviço de arquivos separado nem link externo que possa quebrar — a imagem vem junto com o produto no backup. No celular, o botão de escolher imagem abre a câmera. Reimportar o catálogo **não** apaga foto, estoque mínimo, prazo próprio nem códigos conciliados.
 
 **Contas da inteligência.**
 

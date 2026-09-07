@@ -365,6 +365,54 @@ function toast(msg){
   root.appendChild(t); setTimeout(()=>{ if(t.parentNode) t.remove(); }, 3400);
 }
 
+/* ========================== imagem ==========================
+   A foto vive dentro do próprio produto, reduzida a no máximo
+   480px e ~80 KB — sem serviço de arquivos, sem link que quebra. */
+
+const FOTO_MAX_PX = 480, FOTO_MAX_KB = 80;
+
+function lerImagem(file){
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error("sem arquivo"));
+    if (!/^image\//.test(file.type)) return reject(new Error("Escolha um arquivo de imagem (JPG, PNG ou WebP)."));
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("Não deu para ler o arquivo."));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Arquivo de imagem inválido."));
+      img.onload = () => {
+        try {
+          const esc = Math.min(1, FOTO_MAX_PX / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width*esc)), h = Math.max(1, Math.round(img.height*esc));
+          const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+          const ctx = cv.getContext("2d");
+          ctx.fillStyle = "#ffffff"; ctx.fillRect(0,0,w,h);
+          ctx.drawImage(img, 0, 0, w, h);
+          let q = 0.8, url = cv.toDataURL("image/jpeg", q);
+          while (url.length > FOTO_MAX_KB*1024 && q > 0.32){ q -= 0.1; url = cv.toDataURL("image/jpeg", q); }
+          if (url.length > FOTO_MAX_KB*1024*1.6) return reject(new Error("Imagem grande demais mesmo depois de reduzir."));
+          resolve(url);
+        } catch(e){ reject(new Error("Não deu para processar a imagem.")); }
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+/* miniatura; sem foto mostra a inicial do produto */
+function thumb(p, px){
+  const t = px || 34;
+  if (p.foto){
+    return el("img",{ src:p.foto, alt:p.nome, loading:"lazy",
+      style:"width:"+t+"px;height:"+t+"px;border-radius:8px;object-fit:cover;flex:none;background:var(--surface-2);border:1px solid var(--line)" });
+  }
+  const ini = (p.nome||"?").trim().charAt(0).toUpperCase();
+  return el("div",{ "aria-hidden":"true",
+    style:"width:"+t+"px;height:"+t+"px;border-radius:8px;flex:none;background:var(--surface-2);border:1px solid var(--line);"
+      + "display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--ink-3);font-size:"+Math.round(t*0.42)+"px" }, ini);
+}
+
 /* ===================== unidades e conversão ===================== */
 
 const isGranel = p => (p.tipo || "granel") === "granel";
@@ -677,13 +725,17 @@ function upsertLocal(id, body){
 async function salvarProduto(p){
   if (!requireDb()) return;
   const id = p.id || slug(p.codigo || p.nome);
+  /* reimportar o catálogo não pode apagar foto, mínimo, prazo e conciliações */
+  const atual = state.produtos.find(x => x.id === id) || {};
+  const herda = (k, def) => (p[k] !== undefined && p[k] !== null) ? p[k] : (atual[k] !== undefined ? atual[k] : def);
   const body = {
     codigo: p.codigo || id, nome: p.nome || "", categoria: p.categoria || CAT_FALLBACK,
     tipo: p.tipo || "granel", custo: Number(p.custo)||0,
     unPorCaixa: Number(p.unPorCaixa)||0, pesoUn: Number(p.pesoUn)||0,
-    codigosAlt: Array.isArray(p.codigosAlt) ? p.codigosAlt.slice(0,12) : [],
-    estoqueMin: Number(p.estoqueMin)||0, leadTime: Number(p.leadTime)||0,
-    ativo: p.ativo !== false, criadoEm: p.criadoEm || new Date().toISOString(),
+    codigosAlt: (Array.isArray(herda("codigosAlt", [])) ? herda("codigosAlt", []) : []).slice(0,12),
+    estoqueMin: Number(herda("estoqueMin", 0))||0, leadTime: Number(herda("leadTime", 0))||0,
+    foto: typeof herda("foto","") === "string" ? herda("foto","") : "",
+    ativo: p.ativo !== false, criadoEm: p.criadoEm || atual.criadoEm || new Date().toISOString(),
   };
   await state.db.collection("produtos").doc(id).set(body);
   upsertLocal(id, body);
@@ -872,7 +924,8 @@ function viewEstoque(){
     const min = Number(p.estoqueMin)||0;
     const tr = el("tr",null,
       el("td",{class:"code"}, p.codigo || p.id),
-      el("td",null, el("div",{class:"pname"}, p.nome)),
+      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"},
+        thumb(p, 32), el("div",{class:"pname"}, p.nome))),
       el("td",null, gran ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
       el("td",{class:"r num"}, nunca ? el("span",{class:"zero"},"—") : fmtBase(p,f), el("span",{class:"unit"}, baseUn(p))),
       el("td",{class:"r num", title: gran ? "No balcão este sabor vira "+POOL_NOME : ""},
@@ -1846,7 +1899,9 @@ function viewInteligencia(){
   for (const L of ordem){
     const p = L.p, info = STATUS_INFO[L.status];
     const tr = el("tr",null,
-      el("td",null, el("div",{class:"pname"}, p.nome), el("div",{class:"code"}, (p.codigo||p.id) + (isGranel(p) ? " · granel" : ""))),
+      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"}, thumb(p, 32),
+        el("div",null, el("div",{class:"pname"}, p.nome),
+          el("div",{class:"code"}, (p.codigo||p.id) + (isGranel(p) ? " · granel" : ""))))),
       el("td",null, el("span",{class:"chip "+info.chip}, info.label)),
       el("td",{class:"r num"}, fmtBase(p,L.saldo), el("span",{class:"unit"}, baseUn(p))),
       el("td",{class:"r num"}, L.min > 0 ? fmtBase(p,L.min) : el("span",{class:"zero"},"—")),
@@ -1900,7 +1955,8 @@ function fichaProduto(p){
   const info = STATUS_INFO[A.status];
 
   md.appendChild(el("div",{style:"display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap"},
-    el("div",null,
+    thumb(p, 56),
+    el("div",{style:"min-width:0"},
       el("h2",null, p.nome),
       el("p",{class:"lead", style:"margin-bottom:0"},
         (p.codigo||p.id) + " · " + (isGranel(p) ? "granel, controlado em kg" : "item embalado, controlado em unidade") + " · " + (p.categoria||CAT_FALLBACK))),
@@ -2272,7 +2328,8 @@ function countRow(p, itens, esperadoMap){
     state.cega ? null : el("span",null,"sistema: "+(esperado===undefined ? "—" : fmtBase(p,esperado)+" "+baseUn(p))),
     (!state.cega && dif !== null && Math.abs(dif) > 0.0005)
       ? el("span",{class:"chip "+(dif<0?"crit":"warn")}, (dif>0?"+":"")+fmtBase(p,dif)) : null);
-  row.appendChild(el("div",{class:"meta"}, el("div",{class:"nm"}, p.nome), sm));
+  row.appendChild(el("div",{class:"meta", style:"display:flex;align-items:center;gap:10px"},
+    thumb(p, 38), el("div",{style:"min-width:0"}, el("div",{class:"nm"}, p.nome), sm)));
 
   let medida = meds[0];
   const input = el("input",{type:"text", inputmode:"decimal", placeholder:"0", "aria-label":"Quantidade de "+p.nome});
@@ -2357,7 +2414,9 @@ function viewProdutos(){
     if ((p.codigosAlt||[]).length) conv.push("concilia "+p.codigosAlt.join(", "));
     tbody.appendChild(el("tr",null,
       el("td",{class:"code"}, p.codigo || p.id),
-      el("td",null, el("div",{class:"pname"}, p.nome), conv.length ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, conv.join(" · ")) : null),
+      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"}, thumb(p, 34),
+        el("div",null, el("div",{class:"pname"}, p.nome),
+          conv.length ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, conv.join(" · ")) : null))),
       el("td",null, isGranel(p) ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
       el("td",{class:"r num"}, nBRL(p.custo||0), el("span",{class:"unit"},"/"+baseUn(p))),
       el("td",null, p.ativo === false ? el("span",{class:"chip mute"},"inativo") : el("span",{class:"chip ok"},"ativo")),
@@ -2429,6 +2488,29 @@ function modalProduto(p){
   md.appendChild(el("div",{class:"grid2"}, linhaCx, linhaPeso));
   ajustaTipo();
 
+  /* foto do produto */
+  let foto = (p && p.foto) || "";
+  const previa = el("div");
+  const arquivo = el("input",{type:"file", accept:"image/*", style:"display:none"});
+  const desenhaFoto = () => {
+    previa.innerHTML = "";
+    previa.appendChild(el("div",{style:"display:flex;gap:12px;align-items:center;flex-wrap:wrap"},
+      thumb({ nome: fNome.value || "?", foto }, 64),
+      el("div",{style:"display:flex;gap:8px;flex-wrap:wrap"},
+        el("button",{class:"btn sm", type:"button", onclick:()=>arquivo.click()}, foto ? "Trocar imagem" : "Escolher imagem"),
+        foto ? el("button",{class:"btn sm ghost", type:"button", onclick:()=>{ foto = ""; desenhaFoto(); }},"Remover") : null),
+      el("span",{style:"font-size:11.5px;color:var(--ink-3);flex:1;min-width:170px"},
+        "No celular dá para tirar a foto na hora. A imagem é reduzida automaticamente.")));
+  };
+  arquivo.addEventListener("change", async ()=>{
+    const f = arquivo.files && arquivo.files[0]; if (!f) return;
+    try { foto = await lerImagem(f); desenhaFoto(); }
+    catch(err){ toast(err.message || "Não deu para usar essa imagem."); }
+    arquivo.value = "";
+  });
+  desenhaFoto();
+  md.appendChild(el("div",{class:"field", style:"margin-top:6px"}, el("label",null,"Imagem do produto"), previa, arquivo));
+
   let alts = p && Array.isArray(p.codigosAlt) ? p.codigosAlt.slice() : [];
   if (!isNew){
     const chips = el("div",{style:"display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px"});
@@ -2460,7 +2542,7 @@ function modalProduto(p){
       await salvarProduto({ id: p ? p.id : slug(cod), codigo:cod, nome, categoria: fCat.value.trim()||CAT_FALLBACK,
         tipo: fTipo.value, custo: parseNum(fCusto.value)||0,
         unPorCaixa: parseNum(fCx.value)||0, pesoUn: parseNum(fPeso.value)||0,
-        estoqueMin: p ? p.estoqueMin : 0, leadTime: p ? p.leadTime : 0,
+        estoqueMin: p ? p.estoqueMin : 0, leadTime: p ? p.leadTime : 0, foto,
         codigosAlt: alts, ativo: fAtivo.checked, criadoEm: p ? p.criadoEm : null });
       closeModal(); toast(isNew ? "Produto cadastrado." : "Produto atualizado.");
     }}, isNew ? "Cadastrar" : "Salvar")));
