@@ -78,6 +78,23 @@ window.FINI_CONFIG = {
 
 ---
 
+## Carga inicial por código
+
+O arquivo `carga-inicial-fini.js` grava os 214 produtos do portal Sults já calibrados — custo, tipo (granel ou item), unidades por caixa e peso da embalagem. Não carrega quantidade nenhuma: só o cadastro.
+
+1. Abra o app no computador.
+2. `F12` → aba **Console**.
+3. Cole o arquivo inteiro e aperte Enter.
+4. Acompanhe o andamento nas mensagens do console.
+
+Ele apaga o que existir antes e baixa um backup automático do estado anterior. Depois disso, o caminho é **Contagem → Contar estoque fechado**, que é o que abre o saldo.
+
+## Zerar o estoque
+
+No fim da aba **Produtos** existe um único botão vermelho, **Zerar estoque**. Ele apaga produtos, contagens e movimentos de uma vez, pede senha e baixa um backup antes.
+
+A senha fica no topo do `index.html`, em `senhaEmergencia` — o padrão é `FINI2026` e vale trocar. É uma trava contra o clique errado, não uma proteção de segurança: quem abrir o código-fonte da página consegue lê-la. Se o risco importar, deixe a política do Supabase exigindo login (a OPÇÃO A do `schema.sql`).
+
 ## Como atualizar o site depois
 
 Abra o repositório no GitHub, clique no `index.html`, no ícone de lápis, cole a versão nova e **Commit**. A Vercel publica sozinha em segundos. Não precisa mexer no Supabase de novo — os dados ficam lá, independentes do código.

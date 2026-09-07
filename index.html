@@ -24,7 +24,10 @@
 window.FINI_CONFIG = {
   supabaseUrl: "",   // ex.: https://abcdefgh.supabase.co
   supabaseKey: "",   // chave "anon public"
-  tabela: "fini_docs"
+  tabela: "fini_docs",
+
+  // Senha do botão "Zerar estoque". Troque por uma sua.
+  senhaEmergencia: "FINI2026"
 };
 </script>
 </head>
@@ -615,6 +618,11 @@ function criarDb(backend){
       orderBy:(f,d)=>query(col,f,d||"asc",lim),
       limit:(n)=>query(col,ob,dir,n),
       doc:(id)=>docRef(col, id || uid("id")),
+      get: async ()=>{
+        if (!cache[col]) await carregar(col);
+        const arr = Object.entries(cache[col]||{}).map(([id,d]) => snapDoc(id,d));
+        return { docs:arr, size:arr.length, empty:!arr.length, docChanges:()=>[], metadata:{fromCache:false,hasPendingWrites:false} };
+      },
       onSnapshot:(cb,err)=>{
         (subs[col] = subs[col] || []).push({cb,ob,dir,lim});
         if (cache[col]) emit(col); else carregar(col);
@@ -748,6 +756,73 @@ async function conciliarCodigo(produto, codigo){
   await salvarProduto(Object.assign({}, produto, { codigosAlt: alt }));
 }
 async function removerProduto(id){ if (requireDb()) await state.db.collection("produtos").doc(id).delete(); }
+
+/* ======================= MANUTENÇÃO =======================
+   Apagar, exportar e recarregar o sistema inteiro.
+   Também disponível no console como FiniAdmin.               */
+
+const COLECOES = ["produtos","contagens","movimentos","config"];
+
+async function listarDocs(col){
+  if (!state.db) return [];
+  try {
+    const s = await state.db.collection(col).get();
+    return s.docs.map(d => ({ id:d.id, dados:d.data() }));
+  } catch(e){ return []; }
+}
+
+async function apagarColecao(col, onProgresso){
+  const docs = await listarDocs(col);
+  let n = 0;
+  for (const d of docs){
+    try { await state.db.collection(col).doc(d.id).delete(); n++; }
+    catch(e){ if (e && e.code === "resource_exhausted") await new Promise(r=>setTimeout(r,1200)); }
+    if (onProgresso) onProgresso(n, docs.length, col);
+    if (n % 15 === 0) await new Promise(r=>setTimeout(r,120));
+  }
+  return n;
+}
+
+async function apagarTudo(cols, onProgresso){
+  let total = 0;
+  for (const c of cols) total += await apagarColecao(c, onProgresso);
+  if (cols.includes("produtos")) state.produtos = [];
+  if (cols.includes("contagens")){ state.contagens = []; state.abertaId = null; state.draft = null; }
+  if (cols.includes("movimentos")) state.movimentos = [];
+  state.demo = state.produtos.length === 0;
+  render();
+  return total;
+}
+
+async function exportarTudo(){
+  const saida = { gerado: new Date().toISOString(), versao: 1 };
+  for (const c of COLECOES) saida[c] = await listarDocs(c);
+  return saida;
+}
+
+/* aceita o JSON do backup ou uma lista simples de produtos */
+async function importarJSON(txt, substituir, onProgresso){
+  let dados;
+  try { dados = typeof txt === "string" ? JSON.parse(txt) : txt; }
+  catch(e){ throw new Error("O texto não é um JSON válido."); }
+  if (Array.isArray(dados)) dados = { produtos: dados.map(p => ({ id: p.id || slug(p.codigo||p.nome), dados: p })) };
+  if (substituir) await apagarTudo(COLECOES.filter(c => Array.isArray(dados[c]) && dados[c].length), onProgresso);
+  let n = 0, total = 0;
+  COLECOES.forEach(c => { if (Array.isArray(dados[c])) total += dados[c].length; });
+  for (const c of COLECOES){
+    const lista = dados[c]; if (!Array.isArray(lista)) continue;
+    for (const item of lista){
+      const id = item.id || slug((item.dados && (item.dados.codigo || item.dados.nome)) || uid("d"));
+      const corpo = item.dados || item;
+      try { await state.db.collection(c).doc(id).set(corpo); n++; }
+      catch(e){ if (e && e.code === "resource_exhausted") await new Promise(r=>setTimeout(r,1200)); }
+      if (onProgresso) onProgresso(n, total, c);
+      if (n % 15 === 0) await new Promise(r=>setTimeout(r,120));
+    }
+  }
+  render();
+  return n;
+}
 
 async function salvarConfig(patch){
   state.config = Object.assign({}, state.config, patch);
@@ -2388,7 +2463,7 @@ function viewProdutos(){
   const box = el("div");
   box.appendChild(el("div",{class:"page-head"},
     el("div",null, el("h1",null,"Produtos"),
-      el("p",null, state.demo ? "Nenhum produto cadastrado ainda."
+      el("p",null, state.demo ? "Nenhum produto cadastrado ainda. Use Importar lista, ou o Restaurar backup em Manutenção do sistema, no fim da página."
         : state.produtos.length+" SKUs · "+produtosAtivos().filter(isGranel).length+" granel · "+produtosAtivos().filter(p=>!isGranel(p)).length+" itens embalados")),
     el("div",{class:"spacer"}),
     el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
@@ -2399,6 +2474,7 @@ function viewProdutos(){
       el("h3",null,"Comece pelo catálogo"),
       el("p",null,"Cole a lista de SKUs do Degust — código, nome, categoria e custo. Dá para colar direto do Excel."),
       el("button",{class:"btn primary", onclick:modalImportarProdutos},"Importar lista de produtos")));
+    box.appendChild(cardManutencao());
     return box;
   }
 
@@ -2430,7 +2506,121 @@ function viewProdutos(){
         el("th",null,"Código"), el("th",null,"Produto"), el("th",null,"Tipo"),
         el("th",{class:"r"},"Custo"), el("th",null,"Status"), el("th",{class:"r"},""))),
       tbody)));
+  box.appendChild(cardManutencao());
   return box;
+}
+
+/* ------------------ painel de manutenção ------------------ */
+
+const SENHA_EMERGENCIA = () => String((window.FINI_CONFIG && window.FINI_CONFIG.senhaEmergencia) || "FINI2026");
+
+function cardManutencao(){
+  const card = el("div",{style:"margin-top:34px;padding-top:16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap"});
+  card.appendChild(el("span",{style:"font-size:12px;color:var(--ink-3);flex:1;min-width:220px;max-width:64ch"},
+    "Zerar apaga produtos, contagens e movimentos de uma vez, para todo mundo. É só para emergência — pede senha e baixa um backup antes."));
+  card.appendChild(el("button",{class:"btn danger", onclick:modalZerar},"Zerar estoque"));
+  return card;
+}
+
+function modalZerar(){
+  const md = el("div",{class:"modal", style:"max-width:520px"});
+  md.appendChild(el("h2",null,"Zerar o estoque"));
+  md.appendChild(el("p",{class:"lead"},
+    "Apaga produtos, contagens e movimentos. Some do banco de vez e some para todo mundo que estiver com o app aberto. Não tem desfazer."));
+
+  const senha = el("input",{type:"password", placeholder:"senha", autocomplete:"off"});
+  md.appendChild(el("div",{class:"field"}, el("label",null,"Senha de emergência"), senha));
+
+  const bk = el("input",{type:"checkbox"}); bk.checked = true;
+  md.appendChild(el("label",{class:"switch"}, bk, "Baixar backup antes de apagar"));
+
+  const status = el("div",{style:"font-size:13px;color:var(--ink-2);font-weight:600;margin-top:12px;min-height:20px"});
+  md.appendChild(status);
+
+  const btn = el("button",{class:"btn danger"},"Zerar agora");
+  btn.addEventListener("click", async ()=>{
+    if (senha.value !== SENHA_EMERGENCIA()){ toast("Senha incorreta."); senha.value = ""; senha.focus(); return; }
+    if (!requireDb()) return;
+    btn.disabled = true;
+    if (bk.checked){ status.textContent = "Gerando backup…"; try { await baixarBackup(); } catch(e){} }
+    const n = await apagarTudo(["produtos","contagens","movimentos"],
+      (feito,total,col)=>{ status.textContent = "Apagando " + col + "… " + feito + "/" + total; });
+    closeModal(); toast("Sistema zerado — " + n + " registros apagados.");
+  });
+  senha.addEventListener("keydown", e => { if (e.key === "Enter") btn.click(); });
+
+  md.appendChild(el("div",{class:"modal-actions"},
+    el("button",{class:"btn ghost", onclick:closeModal},"Cancelar"), el("div",{class:"spacer"}), btn));
+  openModal(md);
+}
+
+async function baixarBackup(){
+  if (!requireDb()) return;
+  const dados = await exportarTudo();
+  const txt = JSON.stringify(dados, null, 1);
+  const nome = "backup-fini-" + hoje() + ".json";
+  let dl = null;
+  try { dl = await window.claude?.use?.("downloads"); } catch(e){}
+  if (dl){ try { await dl.save({filename:nome, data:txt}); toast("Backup gerado."); return; } catch(e){} }
+  try {
+    const blob = new Blob([txt], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = nome;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    toast("Backup gerado."); return;
+  } catch(e){}
+  const md = el("div",{class:"modal", style:"max-width:700px"});
+  md.appendChild(el("h2",null,"Copiar backup"));
+  md.appendChild(el("p",{class:"lead"},"Selecione tudo e salve num arquivo .json."));
+  const ta = el("textarea",{style:"min-height:280px"}); ta.value = txt;
+  md.appendChild(el("div",{class:"field"}, ta));
+  md.appendChild(el("div",{class:"modal-actions"}, el("button",{class:"btn primary", onclick:closeModal},"Fechar")));
+  openModal(md); ta.select();
+}
+
+function modalRestaurar(){
+  const md = el("div",{class:"modal", style:"max-width:700px"});
+  md.appendChild(el("h2",null,"Restaurar backup"));
+  md.appendChild(el("p",{class:"lead"},"Cole o conteúdo de um arquivo de backup, ou uma lista de produtos em JSON. O arquivo também pode ser escolhido pelo botão abaixo."));
+
+  const ta = el("textarea",{placeholder:'{ "produtos": [ ... ], "contagens": [ ... ] }'});
+  const arq = el("input",{type:"file", accept:".json,application/json", style:"display:none"});
+  arq.addEventListener("change", ()=>{
+    const f = arq.files && arq.files[0]; if (!f) return;
+    const fr = new FileReader();
+    fr.onload = ()=>{ ta.value = fr.result; ta.dispatchEvent(new Event("input")); };
+    fr.readAsText(f);
+  });
+  const resumo = el("div",{style:"font-size:12.5px;color:var(--ink-2);min-height:20px"});
+  ta.addEventListener("input", ()=>{
+    resumo.textContent = "";
+    try {
+      const d = JSON.parse(ta.value);
+      if (Array.isArray(d)) { resumo.textContent = d.length + " produtos na lista."; return; }
+      resumo.textContent = COLECOES.filter(c=>Array.isArray(d[c])).map(c => d[c].length + " " + c).join(" · ") || "Nada reconhecido.";
+    } catch(e){ resumo.textContent = ta.value.trim() ? "JSON inválido — confira o conteúdo colado." : ""; }
+  });
+  md.appendChild(el("div",{class:"field"},
+    el("label",null,"Conteúdo do backup"), ta, resumo,
+    el("button",{class:"btn sm", type:"button", style:"align-self:flex-start;margin-top:6px", onclick:()=>arq.click()},"Escolher arquivo"), arq));
+
+  const subs = el("input",{type:"checkbox"}); subs.checked = true;
+  md.appendChild(el("label",{class:"switch"}, subs, "Apagar o que existe hoje antes de restaurar"));
+  const status = el("div",{style:"font-size:13px;color:var(--ink-2);font-weight:600;margin-top:10px;min-height:20px"});
+  md.appendChild(status);
+
+  md.appendChild(el("div",{class:"modal-actions"},
+    el("button",{class:"btn ghost", onclick:closeModal},"Cancelar"),
+    el("button",{class:"btn primary", onclick:async(e)=>{
+      if (!ta.value.trim()){ toast("Cole o backup primeiro."); return; }
+      if (!requireDb()) return;
+      e.currentTarget.disabled = true;
+      try {
+        const n = await importarJSON(ta.value, subs.checked, (f,t,c)=>{ status.textContent = "Gravando " + c + "… " + f + "/" + t; });
+        closeModal(); toast(n + " registros restaurados.");
+      } catch(err){ e.currentTarget.disabled = false; toast(err.message || "Falha ao restaurar."); }
+    }},"Restaurar")));
+  openModal(md);
 }
 
 /* ============================ modais ============================ */
@@ -2729,6 +2919,17 @@ document.querySelectorAll("#tabs button").forEach(b =>
 const ri = $("#respInput");
 ri.value = state.resp;
 ri.addEventListener("input", e => { state.resp = e.target.value; try{ localStorage.setItem("fini.resp", state.resp); }catch(err){} });
+
+/* API de manutenção pelo console (site hospedado) */
+window.FiniAdmin = {
+  colecoes: COLECOES,
+  listar: listarDocs,
+  exportar: exportarTudo,
+  importar: (json, substituir) => importarJSON(json, substituir !== false, (f,t,c)=>console.log(c, f+"/"+t)),
+  apagar: (cols) => apagarTudo([].concat(cols), (f,t,c)=>console.log("apagando", c, f+"/"+t)),
+  apagarTudo: () => apagarTudo(["produtos","contagens","movimentos"], (f,t,c)=>console.log("apagando", c, f+"/"+t)),
+  estado: () => ({ modo: state.modo, produtos: state.produtos.length, contagens: state.contagens.length, movimentos: state.movimentos.length }),
+};
 
 state.demo = true;
 render();
