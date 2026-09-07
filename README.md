@@ -11,7 +11,7 @@ O app é **um arquivo só** (`index.html`). Não tem build, não tem npm, não t
 | Aba | Para quê |
 |---|---|
 | **Estoque** | Saldo por SKU no depósito e no balcão, valor a custo, situação de cada produto. Clicar num produto abre a ficha dele. |
-| **Movimentos** | Entrada (compra, bonificação), saída (venda, degustação, desperdício, quebra) e transferência do depósito para o balcão. Importa a venda do Degust. |
+| **Movimentos** | Entrada (compra, bonificação), saída (venda, degustação, desperdício, quebra) e transferência do depósito para o balcão. Importa a venda do Degust e lê nota de compra em PDF. |
 | **Relatórios** | O que mais e o que menos sai, e a saída dia a dia separada por motivo. |
 | **Inteligência** | Consumo médio, quantos dias de estoque restam e quanto comprar considerando o prazo do fornecedor. |
 | **Contagem** | Contagem do depósito e do balcão, na mão ou colando planilha, com apuração de diferença antes de virar saldo. |
@@ -140,6 +140,8 @@ compra sugerida  = consumo diário × (prazo + cobertura desejada) − saldo
 ```
 
 Item consome pela venda; granel consome pela transferência ao balcão.
+
+**Leitura de PDF.** As telas de importação e a **Entrada por PDF** leem o arquivo direto, sem copiar nada. O interpretador (pdf.js) é baixado do cdnjs na primeira vez que você abre um PDF, então essa função precisa de internet. Só funciona com PDF de texto — documento escaneado como imagem não é lido. Na entrada, o app procura no documento os códigos que já existem no cadastro e pega a quantidade da mesma linha; tudo aparece numa tabela editável antes de virar movimento.
 
 **Backup.** No Supabase, **Table Editor → fini_docs → Export as CSV**. Ou use o **Exportar CSV** dentro do próprio app, que sai já legível no Excel.
 

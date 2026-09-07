@@ -319,7 +319,7 @@ const state = {
   db:null, demo:false,
   produtos:[], contagens:[], movimentos:[],
   view:"estoque", abertaId:null, draft:null,
-  filtro:{q:"",cat:"todas"}, cega:false, resp:"",
+  filtro:{q:"",cat:"todas",status:"ativos"}, cega:false, resp:"",
   rel:{ aba:"produto", periodo:"30", de:"", ate:"", ordem:"desc", zerados:true },
   config:{ leadTime:15, coberturaAlvo:30, janela:30 },
   modo:"",
@@ -570,7 +570,10 @@ function ordenados(list){
 }
 function aplicaFiltro(list){
   const q = norm(state.filtro.q);
+  const st = state.filtro.status;
   return list.filter(p => {
+    if (st === "ativos" && p.ativo === false) return false;
+    if (st === "inativos" && p.ativo !== false) return false;
     if (state.filtro.cat !== "todas" && (p.categoria||CAT_FALLBACK) !== state.filtro.cat) return false;
     if (!q) return true;
     return norm(p.nome).includes(q) || norm(p.codigo).includes(q) || norm(p.categoria).includes(q);
@@ -920,6 +923,16 @@ function bannerDemo(){
     el("p",null,"Catálogo de demonstração, só para você ver o app funcionando. Assim que importar o seu, ele some."),
     el("button",{class:"btn primary", onclick:()=>{ state.view="produtos"; render(); setTimeout(modalImportarProdutos,60); }},"Importar meu catálogo"));
 }
+function seletorStatus(){
+  const sel = el("select",{class:"sel","aria-label":"Situação do cadastro"},
+    el("option",{value:"ativos"},"Só ativos"),
+    el("option",{value:"inativos"},"Só inativos"),
+    el("option",{value:"todos"},"Ativos e inativos"));
+  sel.value = state.filtro.status;
+  sel.addEventListener("change", e => { state.filtro.status = e.target.value; render(); });
+  return sel;
+}
+
 function toolbar(withCat, extra){
   const t = el("div",{class:"toolbar"});
   const inp = el("input",{placeholder:"Buscar produto ou código", value:state.filtro.q, "aria-label":"Buscar"});
@@ -1054,6 +1067,7 @@ function viewMovimentos(){
     el("button",{class:"btn primary", onclick:()=>modalMovimento("saida")},"Lançar saída"),
     el("button",{class:"btn", onclick:()=>modalMovimento("entrada")},"Lançar entrada"),
     el("button",{class:"btn", onclick:()=>modalMovimento("transferencia")},"Transferir p/ balcão"),
+    el("button",{class:"btn", onclick:modalEntradaPdf},"Entrada por PDF"),
     el("div",{class:"spacer"}),
     el("button",{class:"btn", onclick:modalImportarVendas},"Importar vendas do Degust")));
 
@@ -1061,7 +1075,9 @@ function viewMovimentos(){
     box.appendChild(el("div",{class:"empty"},
       el("h3",null,"Nenhum movimento lançado"),
       el("p",null,"Depois da contagem inicial, é aqui que o estoque anda: a reposição do baleiro, a compra que chegou, a degustação do sábado, a venda do dia."),
-      el("button",{class:"btn primary", onclick:modalImportarVendas},"Importar vendas do Degust")));
+      el("div",{style:"display:flex;gap:8px;justify-content:center;flex-wrap:wrap"},
+        el("button",{class:"btn primary", onclick:modalImportarVendas},"Importar vendas do Degust"),
+        el("button",{class:"btn", onclick:modalEntradaPdf},"Entrada por PDF"))));
     return box;
   }
 
@@ -1231,6 +1247,189 @@ function linhaMovimento(L, onRemove, onChange){
     el("button",{class:"x", type:"button", title:"remover", onclick:onRemove},"×"));
 }
 
+/* ============================ LEITURA DE PDF ============================
+   O interpretador só é baixado quando você abre o primeiro PDF.        */
+
+let _pdfjs = null;
+function carregarPdfJs(){
+  if (_pdfjs) return _pdfjs;
+  _pdfjs = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    s.onload = () => {
+      const lib = window.pdfjsLib;
+      if (!lib) return reject(new Error("Não deu para carregar o leitor de PDF."));
+      try { lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; } catch(e){}
+      resolve(lib);
+    };
+    s.onerror = () => reject(new Error("Sem conexão para carregar o leitor de PDF."));
+    document.head.appendChild(s);
+  });
+  return _pdfjs;
+}
+
+/* devolve o texto do PDF já quebrado em linhas, na ordem da página */
+async function textoDoPdf(file, onProgresso){
+  const lib = await carregarPdfJs();
+  const buf = await file.arrayBuffer();
+  const doc = await lib.getDocument({ data: buf }).promise;
+  const paginas = [];
+  for (let p = 1; p <= doc.numPages; p++){
+    if (onProgresso) onProgresso(p, doc.numPages);
+    const pg = await doc.getPage(p);
+    const tc = await pg.getTextContent();
+    const linhas = new Map();
+    for (const item of tc.items){
+      if (!item.str) continue;
+      const y = Math.round(item.transform[5]);          // agrupa por altura na página
+      const chave = Math.round(y/3)*3;
+      const atual = linhas.get(chave) || [];
+      atual.push({ x: item.transform[4], t: item.str });
+      linhas.set(chave, atual);
+    }
+    const ordenadas = Array.from(linhas.entries()).sort((a,b)=>b[0]-a[0]);
+    for (const [,partes] of ordenadas){
+      partes.sort((a,b)=>a.x-b.x);
+      const linha = partes.map(p=>p.t).join(" ").replace(/\s{2,}/g," ").trim();
+      if (linha) paginas.push(linha);
+    }
+  }
+  return paginas.join("\n");
+}
+
+/* botão reutilizável: escolhe um PDF e joga o texto no campo indicado */
+function botaoPdf(destino, aoLer){
+  const arq = el("input",{type:"file", accept:"application/pdf,.pdf", style:"display:none"});
+  const btn = el("button",{class:"btn sm", type:"button", onclick:()=>arq.click()},"Ler de um PDF");
+  arq.addEventListener("change", async ()=>{
+    const f = arq.files && arq.files[0]; if (!f) return;
+    const rotulo = btn.textContent;
+    btn.disabled = true; btn.textContent = "Lendo o PDF…";
+    try {
+      const txt = await textoDoPdf(f, (p,t)=>{ btn.textContent = "Lendo página "+p+" de "+t+"…"; });
+      if (destino){ destino.value = txt; destino.dispatchEvent(new Event("input", {bubbles:true})); }
+      if (aoLer) aoLer(txt, f);
+      toast("PDF lido: " + f.name);
+    } catch(err){ toast(err.message || "Não deu para ler o PDF."); }
+    btn.disabled = false; btn.textContent = rotulo; arq.value = "";
+  });
+  return el("span",{style:"display:inline-flex"}, btn, arq);
+}
+
+/* ---- entrada de mercadoria a partir de um documento ----
+   Varre o texto atrás dos códigos que existem no cadastro e pega a
+   quantidade da mesma linha. Funciona com nota, pedido ou romaneio. */
+
+function parseDocumentoEntrada(txt){
+  const achados = []; const vistos = {};
+  for (const raw of txt.split(/\r?\n/)){
+    const linha = raw.trim(); if (!linha) continue;
+    const tokens = linha.split(/\s+/);
+    let p = null, idx = -1;
+    for (let i = 0; i < tokens.length; i++){
+      const cand = tokens[i].replace(/[^\w\-.]/g,"");
+      if (cand.length < 3) continue;
+      const achado = produtoPorCodigo(cand);
+      if (achado){ p = achado; idx = i; break; }
+    }
+    if (!p) continue;
+    const numeros = [];
+    for (let i = idx+1; i < tokens.length; i++){
+      const n = parseNum(tokens[i]);
+      if (n !== null && n > 0) numeros.push(n);
+    }
+    if (!numeros.length) continue;
+    const qtd = numeros[0];                       // primeiro número após o código
+    const chave = p.id;
+    if (vistos[chave] !== undefined){ achados[vistos[chave]].qtd += qtd; continue; }
+    vistos[chave] = achados.length;
+    achados.push({ p, qtd, linha });
+  }
+  return achados;
+}
+
+function modalEntradaPdf(){
+  const md = el("div",{class:"modal", style:"max-width:760px"});
+  md.appendChild(el("h2",null,"Entrada por documento"));
+  md.appendChild(el("p",{class:"lead"},
+    "Leia a nota, o pedido ou o romaneio em PDF — ou cole o texto. O app procura os códigos que já existem no seu cadastro e pega a quantidade da mesma linha. Confira tudo antes de lançar."));
+
+  const fData = el("input",{type:"date", value:hoje()});
+  const fMotivo = el("select",null, ...MOTIVOS.entrada.map(([v,l]) => el("option",{value:v},l)));
+  const fLocal = el("select",null, el("option",{value:"fechado"},"No depósito (estoque fechado)"), el("option",{value:"balcao"},"No balcão"));
+  md.appendChild(el("div",{class:"grid3"},
+    el("div",{class:"field"}, el("label",null,"Data"), fData),
+    el("div",{class:"field"}, el("label",null,"Motivo"), fMotivo),
+    el("div",{class:"field"}, el("label",null,"Onde entra"), fLocal)));
+
+  const ta = el("textarea",{placeholder:"O texto do PDF aparece aqui. Também dá para colar direto."});
+  const prev = el("div",{style:"margin-top:10px"});
+  md.appendChild(el("div",{class:"field"},
+    el("label",null,"Documento"), ta,
+    el("div",{style:"display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap"},
+      botaoPdf(ta),
+      el("span",{class:"hint"},"PDF de texto. Documento escaneado como imagem não é lido."))));
+  md.appendChild(prev);
+
+  let linhas = [];
+  function redesenha(){
+    prev.innerHTML = "";
+    if (!ta.value.trim()) return;
+    linhas = parseDocumentoEntrada(ta.value);
+    if (!linhas.length){
+      prev.appendChild(el("div",{class:"empty", style:"padding:22px"},
+        el("h3",null,"Nenhum código reconhecido"),
+        el("p",null,"O app só reconhece códigos que já estão no cadastro de produtos. Se o fornecedor usa outra codificação, cadastre ou concilie o código primeiro.")));
+      return;
+    }
+    let valor = 0;
+    linhas.forEach(L => valor += L.qtd * (Number(L.p.custo)||0));
+    prev.appendChild(el("div",{class:"tiles", style:"margin-bottom:12px"},
+      tile("Produtos", String(linhas.length), "SKUs", "reconhecidos no documento"),
+      tile("Valor a custo", nBRL(valor), "", "pelo custo do cadastro")));
+    const tb = el("tbody");
+    linhas.forEach((L,i) => {
+      const inp = el("input",{inputmode:"decimal", value: fmtBase(L.p, L.qtd),
+        style:"width:100%;text-align:right;border:1px solid var(--line-strong);border-radius:8px;padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-weight:600"});
+      inp.addEventListener("input", ()=>{ const n = parseNum(inp.value); linhas[i].qtd = n === null ? 0 : n; });
+      tb.appendChild(el("tr",null,
+        el("td",null, el("div",{class:"pname"}, L.p.nome), el("div",{class:"code"}, L.p.codigo||L.p.id)),
+        el("td",null, isGranel(L.p) ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
+        el("td",{style:"width:120px"}, inp),
+        el("td",{class:"unit", style:"width:34px"}, baseUn(L.p)),
+        el("td",{class:"r", style:"width:38px"},
+          el("button",{class:"x", type:"button", title:"remover",
+            style:"border:0;background:none;cursor:pointer;color:var(--ink-3);font-size:16px",
+            onclick:()=>{ linhas.splice(i,1); desenhaTabela(); }},"×"))));
+    });
+    prev.appendChild(el("div",{class:"table-wrap", style:"max-height:300px;overflow-y:auto"},
+      el("table",{style:"min-width:460px"},
+        el("thead",null,el("tr",null,el("th",null,"Produto"),el("th",null,"Tipo"),el("th",{class:"r"},"Quantidade"),el("th",null,""),el("th",null,""))), tb)));
+  }
+  function desenhaTabela(){
+    const guardadas = linhas.slice();
+    redesenha();
+    linhas = guardadas;
+  }
+  ta.addEventListener("input", redesenha);
+
+  md.appendChild(el("div",{class:"modal-actions"},
+    el("button",{class:"btn ghost", onclick:closeModal},"Cancelar"),
+    el("button",{class:"btn primary", onclick:async(e)=>{
+      const itens = {};
+      let algo = false;
+      linhas.forEach(L => { const q = Number(L.qtd)||0; if (q){ itens[L.p.id] = (itens[L.p.id]||0) + q; algo = true; } });
+      if (!algo){ toast("Nenhuma quantidade para lançar."); return; }
+      if (!requireDb()) return;
+      e.currentTarget.disabled = true;
+      await salvarMovimento({ direcao:"entrada", motivo:fMotivo.value, local:fLocal.value,
+        itens, granelKg:0, data:fData.value || hoje(), origem:"pdf", obs:"Lido de documento" });
+      closeModal(); toast(Object.keys(itens).length + " produtos deram entrada.");
+    }},"Lançar entrada")));
+  openModal(md);
+}
+
 /* ------------------ importação de vendas (Degust) ------------------ */
 
 function parseVendas(txt){
@@ -1260,7 +1459,11 @@ function modalImportarVendas(){
 
   const ta = el("textarea",{placeholder:"1001 GULOSEIMAS FINI            KG   13,54   169,00   2.288,60\n1015 ALGODAO DOCE T FRUTTI 35G   UN    3,00    13,50      40,50"});
   const prev = el("div",{style:"margin-top:10px"});
-  md.appendChild(el("div",{class:"field"}, el("label",null,"Relatório"), ta));
+  md.appendChild(el("div",{class:"field"},
+    el("label",null,"Relatório"), ta,
+    el("div",{style:"display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap"},
+      botaoPdf(ta),
+      el("span",{class:"hint"},"O PDF do Degust pode ser lido direto, sem copiar nada."))));
   md.appendChild(prev);
 
   let resultado = null;
@@ -2226,7 +2429,9 @@ function modalImportarContagem(c){
   md.appendChild(el("div",{class:"field"},
     el("label",null,"Código · Quantidade · Unidade (opcional)"),
     ta,
-    el("span",{class:"hint"},"Unidade aceita kg, un, cx e emb. Sem unidade, entra na base do produto: kg no granel, unidade no item.")));
+    el("div",{style:"display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap"},
+      botaoPdf(ta),
+      el("span",{class:"hint"},"Unidade aceita kg, un, cx e emb. Sem unidade, entra na base do produto."))));
   md.appendChild(prev);
 
   let linhas = [];
@@ -2464,7 +2669,7 @@ function viewProdutos(){
   box.appendChild(el("div",{class:"page-head"},
     el("div",null, el("h1",null,"Produtos"),
       el("p",null, state.demo ? "Nenhum produto cadastrado ainda. Use Importar lista, ou o Restaurar backup em Manutenção do sistema, no fim da página."
-        : state.produtos.length+" SKUs · "+produtosAtivos().filter(isGranel).length+" granel · "+produtosAtivos().filter(p=>!isGranel(p)).length+" itens embalados")),
+        : state.produtos.length+" SKUs · "+produtosAtivos().filter(isGranel).length+" granel · "+produtosAtivos().filter(p=>!isGranel(p)).length+" itens embalados · "+state.produtos.filter(p=>p.ativo===false).length+" inativos")),
     el("div",{class:"spacer"}),
     el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
     el("button",{class:"btn primary", onclick:()=>modalProduto(null)},"Novo produto")));
@@ -2478,7 +2683,7 @@ function viewProdutos(){
     return box;
   }
 
-  box.appendChild(toolbar(true));
+  box.appendChild(toolbar(true, [seletorStatus()]));
   const lista = aplicaFiltro(ordenados(state.produtos));
   const tbody = el("tbody"); let catAtual = null;
   for (const p of lista){
