@@ -22,11 +22,11 @@
      ================================================== -->
 <script>
 window.FINI_CONFIG = {
-  supabaseUrl: "",   // https://qirhbthfouxbwxzaxbrn.supabase.co
-  supabaseKey: "",   // chave "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpcmhidGhmb3V4Ynd4emF4YnJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3OTUyNzAsImV4cCI6MjEwNDM3MTI3MH0.Cv9ScQUI0nnQcmZr4MHFv1nm3YbVw090M6sEDE975nk"
+  supabaseUrl: "https://qirhbthfouxbwxzaxbrn.supabase.co",
+  supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpcmhidGhmb3V4Ynd4emF4YnJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3OTUyNzAsImV4cCI6MjEwNDM3MTI3MH0.Cv9ScQUI0nnQcmZr4MHFv1nm3YbVw090M6sEDE975nk",
   tabela: "fini_docs",
 
-  // Senha do botão "Zerar estoque". Troque por uma sua.
+  // Senha do botao "Zerar estoque". Troque por uma sua.
   senhaEmergencia: "FINI2026"
 };
 </script>
@@ -688,19 +688,36 @@ function backendSupabase(client, tabela){
 
 async function abrirArmazenamento(){
   try { const d = await window.claude?.use?.("db"); if (d) return { db:d, modo:"claude" }; } catch(e){}
+
   const cfg = window.FINI_CONFIG || {};
-  if (cfg.supabaseUrl && cfg.supabaseKey && window.supabase && window.supabase.createClient){
-    try {
-      const client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
-      return { db: criarDb(backendSupabase(client, cfg.tabela)), modo:"supabase" };
-    } catch(e){ /* cai para local */ }
+  const configurado = !!(cfg.supabaseUrl && cfg.supabaseKey);
+
+  if (configurado){
+    // o script do Supabase pode ainda estar carregando: espera até 8s
+    for (let i = 0; i < 40 && !(window.supabase && window.supabase.createClient); i++){
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (window.supabase && window.supabase.createClient){
+      try {
+        const client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
+        return { db: criarDb(backendSupabase(client, cfg.tabela)), modo:"supabase" };
+      } catch(e){ /* cai no bloqueio abaixo */ }
+    }
+    // Configurado para o banco compartilhado, mas não deu para chegar nele.
+    // NÃO cai para o armazenamento local: trabalhar aqui criaria dados órfãos.
+    return { db: null, modo:"falha" };
   }
+
   return { db: criarDb(backendLocal()), modo:"local" };
 }
 
 async function initDb(){
   const { db, modo } = await abrirArmazenamento();
-  if (!db){ setStatus("off","sem armazenamento"); state.demo = state.produtos.length === 0; render(); return; }
+  state.modo = modo;
+  if (!db){
+    setStatus("off", modo === "falha" ? "não conectou ao banco" : "sem armazenamento");
+    state.demo = false; render(); return;
+  }
   state.db = db; state.modo = modo;
   setStatus("warn", modo === "local" ? "salvando neste aparelho" : "sincronizando…");
 
@@ -901,7 +918,7 @@ function render(){
   if (ae && ae.closest && ae.closest(".count-list")) return;   // não redesenha embaixo de quem digita
   const app = $("#app"); const y = window.scrollY;
   app.innerHTML = "";
-  if (state.modo === "local") app.appendChild(avisoSemSincronia());
+  if (state.modo === "local" || state.modo === "falha") app.appendChild(avisoSemSincronia());
   if (state.view === "estoque") app.appendChild(viewEstoque());
   else if (state.view === "movimentos") app.appendChild(viewMovimentos());
   else if (state.view === "relatorios") app.appendChild(viewRelatorios());
@@ -915,15 +932,23 @@ function render(){
 /* Aviso permanente quando o aparelho não está falando com o banco.
    Sem isso, dá para trabalhar o dia inteiro numa máquina isolada. */
 function avisoSemSincronia(){
+  const falha = state.modo === "falha";
   return el("div",{style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
     + "padding:14px 16px;margin:16px 0 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap"},
     el("span",{style:"font-weight:700;color:var(--crit);font-size:13px;letter-spacing:.04em;text-transform:uppercase"},
-      "Sem sincronia"),
-    el("p",{style:"margin:0;flex:1;min-width:240px;font-size:13.5px;color:var(--ink)"},
-      "Este aparelho está salvando só aqui, no navegador. O que for lançado nesta tela ",
-      el("strong",null,"não aparece nos outros computadores"),
-      " e some se os dados do navegador forem limpos. Para ligar, preencha supabaseUrl e supabaseKey no topo do index.html."),
-    el("button",{class:"btn sm", onclick:()=>modalComoConectar()},"Como ligar"));
+      falha ? "Não conectou" : "Sem sincronia"),
+    falha
+      ? el("p",{style:"margin:0;flex:1;min-width:240px;font-size:13.5px;color:var(--ink)"},
+          "Este aparelho está configurado para o banco compartilhado, mas não conseguiu chegar nele agora. ",
+          el("strong",null,"Não lance nada nesta tela"),
+          " — recarregue a página. Se continuar, confira a internet deste computador.")
+      : el("p",{style:"margin:0;flex:1;min-width:240px;font-size:13.5px;color:var(--ink)"},
+          "Este aparelho está salvando só aqui, no navegador. O que for lançado nesta tela ",
+          el("strong",null,"não aparece nos outros computadores"),
+          " e some se os dados do navegador forem limpos. Para ligar, preencha supabaseUrl e supabaseKey no topo do index.html."),
+    falha
+      ? el("button",{class:"btn sm", onclick:()=>location.reload()},"Recarregar")
+      : el("button",{class:"btn sm", onclick:()=>modalComoConectar()},"Como ligar"));
 }
 
 function modalComoConectar(){
