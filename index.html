@@ -271,7 +271,6 @@ tr.destaque td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
       <button role="tab" data-view="relatorios" aria-selected="false">Relatórios</button>
       <button role="tab" data-view="inteligencia" aria-selected="false">Inteligência</button>
       <button role="tab" data-view="contagem" aria-selected="false">Contagem</button>
-      <button role="tab" data-view="produtos" aria-selected="false">Produtos</button>
     </nav>
   </div>
 </header>
@@ -321,6 +320,7 @@ const state = {
   view:"estoque", abertaId:null, draft:null,
   filtro:{q:"",cat:"todas",status:"ativos"}, cega:false, resp:"",
   rel:{ aba:"produto", periodo:"30", de:"", ate:"", ordem:"desc", zerados:true },
+  erroBanco:null,
   config:{ leadTime:15, coberturaAlvo:30, janela:30 },
   modo:"",
 };
@@ -582,6 +582,47 @@ function aplicaFiltro(list){
 
 /* ============================ db ============================ */
 
+/* Traduz o erro do banco para algo acionável e mostra na tela.
+   Antes isso ficava mudo e a pessoa achava que a importação não tinha funcionado. */
+function reportarErroBanco(erro, colecao){
+  const cod = String((erro && (erro.code || erro.status)) || "");
+  const msg = String((erro && (erro.message || erro.hint)) || "");
+  let titulo = "Erro no banco", texto = msg || "Não deu para falar com o banco.", dica = "";
+
+  if (/permission denied|row-level security|violates row-level/i.test(msg) || cod === "42501"){
+    titulo = "Sem permissão no banco";
+    texto = "O banco recusou a leitura ou a gravação de " + colecao + ". Os dados podem estar lá, mas a política de acesso não libera para este app.";
+    dica = 'No Supabase, SQL Editor: drop policy if exists "usuarios logados" on public.fini_docs; create policy "acesso app" on public.fini_docs for all to anon, authenticated using (true) with check (true);';
+  } else if (/does not exist|schema cache|PGRST20[0-9]/i.test(msg) || cod === "42P01" || cod === "404"){
+    titulo = "Tabela não encontrada";
+    texto = "O banco respondeu, mas não achou a tabela fini_docs.";
+    dica = "Rode o schema.sql no SQL Editor e depois: notify pgrst, 'reload schema';";
+  } else if (/JWT|apikey|Invalid API key|401/i.test(msg) || cod === "401"){
+    titulo = "Chave recusada";
+    texto = "O banco recusou a chave deste app.";
+    dica = "Confira supabaseKey no topo do index.html — tem que ser a chave anon public do projeto.";
+  } else if (/Failed to fetch|NetworkError|fetch/i.test(msg)){
+    titulo = "Sem conexão com o banco";
+    texto = "Não deu para alcançar o Supabase deste computador.";
+    dica = "Confira a internet e recarregue a página.";
+  }
+  state.erroBanco = { titulo, texto, dica };
+  setStatus("off", titulo.toLowerCase());
+  render();
+}
+
+function bannerErroBanco(){
+  const e = state.erroBanco;
+  return el("div",{style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
+    + "padding:14px 16px;margin:16px 0 0"},
+    el("div",{style:"display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px"},
+      el("span",{style:"font-weight:700;color:var(--crit);font-size:13px;letter-spacing:.04em;text-transform:uppercase"}, e.titulo),
+      el("p",{style:"margin:0;flex:1;min-width:240px;font-size:13.5px;color:var(--ink)"}, e.texto),
+      el("button",{class:"btn sm", onclick:()=>location.reload()},"Recarregar")),
+    e.dica ? el("code",{style:"display:block;font-size:11.5px;color:var(--ink-2);background:var(--surface);"
+      + "border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:pre-wrap"}, e.dica) : null);
+}
+
 function setStatus(kind, txt){
   const d = $("#dot"), t = $("#statusTxt");
   if (!d) return;
@@ -611,7 +652,14 @@ function criarDb(backend){
     });
   }
   async function carregar(col){
-    try { cache[col] = await backend.load(col); } catch(e){ cache[col] = cache[col] || {}; }
+    try {
+      cache[col] = await backend.load(col);
+      if (backend.aoOk) backend.aoOk();
+    } catch(e){
+      cache[col] = cache[col] || {};
+      // nunca falhar em silêncio: quem estiver operando precisa saber
+      if (backend.aoFalhar) backend.aoFalhar(e, col);
+    }
     emit(col);
   }
   backend.aoMudar = col => carregar(col);
@@ -666,7 +714,8 @@ function backendSupabase(client, tabela){
     },
     async save(c,id,dados){
       const { error } = await client.from(T).upsert({ colecao:c, id, dados, atualizado_em:new Date().toISOString() }, { onConflict:"colecao,id" });
-      if (error) throw error;
+      if (error){ if (b.aoFalhar) b.aoFalhar(error, c); throw error; }
+      if (b.aoOk) b.aoOk();
     },
     async remove(c,id){
       const { error } = await client.from(T).delete().eq("colecao",c).eq("id",id);
@@ -700,7 +749,10 @@ async function abrirArmazenamento(){
     if (window.supabase && window.supabase.createClient){
       try {
         const client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
-        return { db: criarDb(backendSupabase(client, cfg.tabela)), modo:"supabase" };
+        const back = backendSupabase(client, cfg.tabela);
+        back.aoFalhar = (erro, col) => reportarErroBanco(erro, col);
+        back.aoOk = () => { if (state.erroBanco){ state.erroBanco = null; render(); } };
+        return { db: criarDb(back), modo:"supabase" };
       } catch(e){ /* cai no bloqueio abaixo */ }
     }
     // Configurado para o banco compartilhado, mas não deu para chegar nele.
@@ -918,13 +970,14 @@ function render(){
   if (ae && ae.closest && ae.closest(".count-list")) return;   // não redesenha embaixo de quem digita
   const app = $("#app"); const y = window.scrollY;
   app.innerHTML = "";
-  if (state.modo === "local" || state.modo === "falha") app.appendChild(avisoSemSincronia());
+  if (state.erroBanco) app.appendChild(bannerErroBanco());
+  else if (state.modo === "local" || state.modo === "falha") app.appendChild(avisoSemSincronia());
   if (state.view === "estoque") app.appendChild(viewEstoque());
   else if (state.view === "movimentos") app.appendChild(viewMovimentos());
   else if (state.view === "relatorios") app.appendChild(viewRelatorios());
   else if (state.view === "inteligencia") app.appendChild(viewInteligencia());
   else if (state.view === "contagem") app.appendChild(viewContagem());
-  else app.appendChild(viewProdutos());
+  else app.appendChild(viewEstoque());
   document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.view === state.view)));
   window.scrollTo(0, y);
 }
@@ -989,7 +1042,7 @@ function bannerDemo(){
   return el("div",{class:"banner"},
     el("span",{class:"tag"},"exemplo"),
     el("p",null,"Catálogo de demonstração, só para você ver o app funcionando. Assim que importar o seu, ele some."),
-    el("button",{class:"btn primary", onclick:()=>{ state.view="produtos"; render(); setTimeout(modalImportarProdutos,60); }},"Importar meu catálogo"));
+    el("button",{class:"btn primary", onclick:()=>{ state.view="estoque"; render(); setTimeout(modalImportarProdutos,60); }},"Importar meu catálogo"));
 }
 function seletorStatus(){
   const sel = el("select",{class:"sel","aria-label":"Situação do cadastro"},
@@ -1027,85 +1080,121 @@ function toolbar(withCat, extra){
 
 /* ---------------------------- ESTOQUE ---------------------------- */
 
+/* ---- Estoque: catálogo e saldo na mesma tela ---- */
 function viewEstoque(){
   const box = el("div");
-  const prods = state.demo ? demoProdutos() : produtosAtivos();
+  const demo = state.demo;
+  const prods = demo ? demoProdutos() : state.produtos;
   const s = calcSaldos();
 
   box.appendChild(el("div",{class:"page-head"},
     el("div",null,
-      el("h1",null,"Saldo de estoque"),
+      el("h1",null,"Estoque"),
       el("p",null, s.ref.fechado
-        ? "Estoque fechado apurado na contagem de "+dataHoraBR(s.ref.fechado.aplicadaEm)+", mais os movimentos lançados depois."
+        ? "Saldo apurado na contagem de "+dataHoraBR(s.ref.fechado.aplicadaEm)+", mais os movimentos lançados depois. Clique num produto para abrir a ficha."
         : "Ainda sem contagem aplicada — o saldo começa na primeira contagem do estoque fechado.")),
     el("div",{class:"spacer"}),
-    el("button",{class:"btn", onclick:()=>exportarCSV(prods,s)},"Exportar CSV")));
+    el("button",{class:"btn", onclick:()=>exportarCSV(prods.filter(p=>p.ativo!==false), s)},"Exportar CSV"),
+    el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
+    el("button",{class:"btn primary", onclick:()=>fichaProduto(null)},"Novo produto")));
 
-  if (state.demo) box.appendChild(bannerDemo());
+  if (demo) box.appendChild(bannerDemo());
 
-  let granelF=0, itensF=0, valor=0, semContagem=0;
-  for (const p of prods){
+  if (!demo && !state.produtos.length){
+    box.appendChild(el("div",{class:"empty"},
+      el("h3",null,"Comece pelo catálogo"),
+      el("p",null,"Cole a lista de SKUs — código, nome, categoria e custo. Dá para colar direto do Excel, ou ler de um PDF."),
+      el("button",{class:"btn primary", onclick:modalImportarProdutos},"Importar lista de produtos")));
+    box.appendChild(cardManutencao());
+    return box;
+  }
+
+  const ativos = prods.filter(p => p.ativo !== false);
+  let granelF=0, itensF=0, valor=0, semContagem=0, abaixoMin=0;
+  for (const p of ativos){
     const f = s.fechado[p.id]||0, b = isGranel(p) ? 0 : (s.balcao[p.id]||0);
     if (isGranel(p)) granelF += f; else itensF += f + b;
     valor += (f+b) * (Number(p.custo)||0);
     if (!(p.id in s.fechado)) semContagem++;
+    const min = Number(p.estoqueMin)||0;
+    if (min > 0 && (f+b) <= min) abaixoMin++;
   }
-  valor += s.poolGranel * custoMedioGranel(prods, s);
+  valor += s.poolGranel * custoMedioGranel(ativos, s);
 
   box.appendChild(el("div",{class:"tiles"},
     tile("Granel fechado", nKg1(granelF), "kg", "no depósito, por sabor"),
     tile(POOL_NOME, nKg1(s.poolGranel), "kg", "todo o granel do balcão", "pool"),
     tile("Itens embalados", nUn(itensF), "un", "fechado + balcão"),
-    tile("Valor a custo", nBRL(valor), "", "estoque total"),
-    semContagem > 0 ? tile("Sem contagem", String(semContagem), "SKUs", "nunca apurados", "alert")
-                    : tile("Cobertura", "100", "%", "todos os SKUs contados")));
+    tile("Valor a custo", nBRL(valor), "", ativos.length+" SKUs ativos"),
+    abaixoMin > 0 ? tile("Abaixo do mínimo", String(abaixoMin), "SKUs", "precisam repor", "alert")
+    : semContagem > 0 ? tile("Sem contagem", String(semContagem), "SKUs", "nunca apurados", "alert")
+    : tile("Cobertura", "100", "%", "todos os SKUs contados")));
 
-  box.appendChild(toolbar(true));
+  box.appendChild(toolbar(true, [seletorStatus()]));
 
   const lista = aplicaFiltro(ordenados(prods));
   if (!lista.length){
-    box.appendChild(el("div",{class:"empty"}, el("h3",null,"Nada encontrado"), el("p",null,"Ajuste a busca ou o filtro de categoria.")));
+    box.appendChild(el("div",{class:"empty"}, el("h3",null,"Nada encontrado"),
+      el("p",null,"Ajuste a busca, a categoria ou o filtro de ativos.")));
+    box.appendChild(cardManutencao());
     return box;
   }
 
   const tbody = el("tbody"); let catAtual = null;
   for (const p of lista){
     const cat = p.categoria || CAT_FALLBACK;
-    if (cat !== catAtual && state.filtro.cat === "todas"){ catAtual = cat; tbody.appendChild(el("tr",{class:"grp"}, el("td",{colspan:"8"}, cat))); }
+    if (cat !== catAtual && state.filtro.cat === "todas"){
+      catAtual = cat;
+      tbody.appendChild(el("tr",{class:"grp"}, el("td",{colspan:"9"}, cat)));
+    }
     const gran = isGranel(p);
     const f = s.fechado[p.id];
     const nunca = !(p.id in s.fechado);
-    const b = gran ? (s.granelNaContagem[p.id]) : (s.balcao[p.id]||0);
+    const b = gran ? null : (s.balcao[p.id]||0);
     const tot = (f||0) + (gran ? 0 : (b||0));
     const min = Number(p.estoqueMin)||0;
+    const conv = [];
+    if (Number(p.unPorCaixa)>0) conv.push(nUn(p.unPorCaixa)+" un/cx");
+    if (Number(p.pesoUn)>0) conv.push(nKg1(p.pesoUn)+" kg/"+(gran?"emb":"un"));
+    if ((p.codigosAlt||[]).length) conv.push("concilia "+p.codigosAlt.join(", "));
+
     const tr = el("tr",null,
       el("td",{class:"code"}, p.codigo || p.id),
-      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"},
-        thumb(p, 32), el("div",{class:"pname"}, p.nome))),
+      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"}, thumb(p, 32),
+        el("div",{style:"min-width:0"}, el("div",{class:"pname"}, p.nome),
+          conv.length ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, conv.join(" · ")) : null))),
       el("td",null, gran ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
+      el("td",{class:"r num"}, nBRL(p.custo||0), el("span",{class:"unit"},"/"+baseUn(p))),
       el("td",{class:"r num"}, nunca ? el("span",{class:"zero"},"—") : fmtBase(p,f), el("span",{class:"unit"}, baseUn(p))),
       el("td",{class:"r num", title: gran ? "No balcão este sabor vira "+POOL_NOME : ""},
-        gran ? el("span",{class:"zero", style:"font-size:11.5px"}, "vira "+POOL_NOME)
+        gran ? el("span",{class:"zero", style:"font-size:11px"}, POOL_NOME)
              : ((b||0) === 0 ? el("span",{class:"zero"},"—") : nUn(b))),
       el("td",{class:"r num"}, el("strong",null, fmtBase(p,tot))),
       el("td",{class:"r num"}, nBRL(tot * (Number(p.custo)||0))),
-      el("td",null, nunca ? el("span",{class:"chip warn"},"sem contagem")
-        : (min > 0 && tot <= min ? el("span",{class:"chip crit"},"abaixo do mínimo")
-        : (tot <= 0 ? el("span",{class:"chip crit"},"zerado") : el("span",{class:"chip ok"},"ok")))));
+      el("td",null,
+        p.ativo === false ? el("span",{class:"chip mute"},"inativo")
+        : nunca ? el("span",{class:"chip warn"},"sem contagem")
+        : (min > 0 && tot <= min) ? el("span",{class:"chip crit"},"abaixo do mínimo")
+        : tot <= 0 ? el("span",{class:"chip crit"},"zerado")
+        : el("span",{class:"chip ok"},"ok")));
     tr.style.cursor = "pointer";
     tr.title = "Abrir a ficha de " + p.nome;
     tr.addEventListener("click", ()=>fichaProduto(p));
     tbody.appendChild(tr);
   }
+
   box.appendChild(el("div",{class:"table-wrap"},
-    el("table",null,
+    el("table",{style:"min-width:900px"},
       el("thead",null, el("tr",null,
         el("th",null,"Código"), el("th",null,"Produto"), el("th",null,"Tipo"),
-        el("th",{class:"r"},"Fechado"), el("th",{class:"r"},"Balcão"),
-        el("th",{class:"r"},"Total"), el("th",{class:"r"},"Custo"), el("th",null,"Situação"))),
+        el("th",{class:"r"},"Custo"), el("th",{class:"r"},"Fechado"), el("th",{class:"r"},"Balcão"),
+        el("th",{class:"r"},"Total"), el("th",{class:"r"},"Valor"), el("th",null,"Situação"))),
       tbody)));
+
   box.appendChild(el("p",{style:"font-size:12px;color:var(--ink-3);margin:10px 2px 0;max-width:74ch"},
-    "No depósito cada sabor de granel tem saldo próprio. Ao ser transferido para o balcão ele perde a identidade e passa a compor o "+POOL_NOME+" — que é como a venda sai do Degust. Item embalado mantém o nome dele nos dois lugares."));
+    "No depósito cada sabor de granel tem saldo próprio. Ao ir para o balcão ele perde a identidade e passa a compor o "+POOL_NOME+" — que é como a venda sai do Degust. Item embalado mantém o nome nos dois lugares."));
+
+  box.appendChild(cardManutencao());
   return box;
 }
 
@@ -2836,58 +2925,6 @@ function atualizaProgresso(itens){
 
 /* ---------------------------- PRODUTOS ---------------------------- */
 
-function viewProdutos(){
-  const box = el("div");
-  box.appendChild(el("div",{class:"page-head"},
-    el("div",null, el("h1",null,"Produtos"),
-      el("p",null, state.demo ? "Nenhum produto cadastrado ainda. Use Importar lista, ou o Restaurar backup em Manutenção do sistema, no fim da página."
-        : state.produtos.length+" SKUs · "+produtosAtivos().filter(isGranel).length+" granel · "+produtosAtivos().filter(p=>!isGranel(p)).length+" itens embalados · "+state.produtos.filter(p=>p.ativo===false).length+" inativos")),
-    el("div",{class:"spacer"}),
-    el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
-    el("button",{class:"btn primary", onclick:()=>fichaProduto(null)},"Novo produto")));
-
-  if (!state.produtos.length){
-    box.appendChild(el("div",{class:"empty"},
-      el("h3",null,"Comece pelo catálogo"),
-      el("p",null,"Cole a lista de SKUs do Degust — código, nome, categoria e custo. Dá para colar direto do Excel."),
-      el("button",{class:"btn primary", onclick:modalImportarProdutos},"Importar lista de produtos")));
-    box.appendChild(cardManutencao());
-    return box;
-  }
-
-  box.appendChild(toolbar(true, [seletorStatus()]));
-  const lista = aplicaFiltro(ordenados(state.produtos));
-  const tbody = el("tbody"); let catAtual = null;
-  for (const p of lista){
-    const cat = p.categoria || CAT_FALLBACK;
-    if (cat !== catAtual && state.filtro.cat === "todas"){ catAtual = cat; tbody.appendChild(el("tr",{class:"grp"}, el("td",{colspan:"6"}, cat))); }
-    const conv = [];
-    if (Number(p.unPorCaixa)>0) conv.push(nUn(p.unPorCaixa)+" un/cx");
-    if (Number(p.pesoUn)>0) conv.push(nKg1(p.pesoUn)+" kg/"+(isGranel(p)?"emb":"un"));
-    if ((p.codigosAlt||[]).length) conv.push("concilia "+p.codigosAlt.join(", "));
-    const tr = el("tr",null,
-      el("td",{class:"code"}, p.codigo || p.id),
-      el("td",null, el("div",{style:"display:flex;align-items:center;gap:10px"}, thumb(p, 34),
-        el("div",null, el("div",{class:"pname"}, p.nome),
-          conv.length ? el("div",{style:"font-size:11.5px;color:var(--ink-3)"}, conv.join(" · ")) : null))),
-      el("td",null, isGranel(p) ? el("span",{class:"chip gran"},"granel") : el("span",{class:"chip mute"},"item")),
-      el("td",{class:"r num"}, nBRL(p.custo||0), el("span",{class:"unit"},"/"+baseUn(p))),
-      el("td",null, p.ativo === false ? el("span",{class:"chip mute"},"inativo") : el("span",{class:"chip ok"},"ativo")),
-      el("td",{class:"r"}, el("button",{class:"btn sm ghost", onclick:()=>fichaProduto(p)},"Abrir")));
-    tr.style.cursor = "pointer";
-    tr.addEventListener("click", e => { if (!e.target.closest("button")) fichaProduto(p); });
-    tbody.appendChild(tr);
-  }
-  box.appendChild(el("div",{class:"table-wrap"},
-    el("table",null,
-      el("thead",null, el("tr",null,
-        el("th",null,"Código"), el("th",null,"Produto"), el("th",null,"Tipo"),
-        el("th",{class:"r"},"Custo"), el("th",null,"Status"), el("th",{class:"r"},""))),
-      tbody)));
-  box.appendChild(cardManutencao());
-  return box;
-}
-
 /* ------------------ painel de manutenção ------------------ */
 
 const SENHA_EMERGENCIA = () => String((window.FINI_CONFIG && window.FINI_CONFIG.senhaEmergencia) || "FINI2026");
@@ -2954,51 +2991,6 @@ async function baixarBackup(){
   md.appendChild(el("div",{class:"field"}, ta));
   md.appendChild(el("div",{class:"modal-actions"}, el("button",{class:"btn primary", onclick:closeModal},"Fechar")));
   openModal(md); ta.select();
-}
-
-function modalRestaurar(){
-  const md = el("div",{class:"modal", style:"max-width:700px"});
-  md.appendChild(el("h2",null,"Restaurar backup"));
-  md.appendChild(el("p",{class:"lead"},"Cole o conteúdo de um arquivo de backup, ou uma lista de produtos em JSON. O arquivo também pode ser escolhido pelo botão abaixo."));
-
-  const ta = el("textarea",{placeholder:'{ "produtos": [ ... ], "contagens": [ ... ] }'});
-  const arq = el("input",{type:"file", accept:".json,application/json", style:"display:none"});
-  arq.addEventListener("change", ()=>{
-    const f = arq.files && arq.files[0]; if (!f) return;
-    const fr = new FileReader();
-    fr.onload = ()=>{ ta.value = fr.result; ta.dispatchEvent(new Event("input")); };
-    fr.readAsText(f);
-  });
-  const resumo = el("div",{style:"font-size:12.5px;color:var(--ink-2);min-height:20px"});
-  ta.addEventListener("input", ()=>{
-    resumo.textContent = "";
-    try {
-      const d = JSON.parse(ta.value);
-      if (Array.isArray(d)) { resumo.textContent = d.length + " produtos na lista."; return; }
-      resumo.textContent = COLECOES.filter(c=>Array.isArray(d[c])).map(c => d[c].length + " " + c).join(" · ") || "Nada reconhecido.";
-    } catch(e){ resumo.textContent = ta.value.trim() ? "JSON inválido — confira o conteúdo colado." : ""; }
-  });
-  md.appendChild(el("div",{class:"field"},
-    el("label",null,"Conteúdo do backup"), ta, resumo,
-    el("button",{class:"btn sm", type:"button", style:"align-self:flex-start;margin-top:6px", onclick:()=>arq.click()},"Escolher arquivo"), arq));
-
-  const subs = el("input",{type:"checkbox"}); subs.checked = true;
-  md.appendChild(el("label",{class:"switch"}, subs, "Apagar o que existe hoje antes de restaurar"));
-  const status = el("div",{style:"font-size:13px;color:var(--ink-2);font-weight:600;margin-top:10px;min-height:20px"});
-  md.appendChild(status);
-
-  md.appendChild(el("div",{class:"modal-actions"},
-    el("button",{class:"btn ghost", onclick:closeModal},"Cancelar"),
-    el("button",{class:"btn primary", onclick:async(e)=>{
-      if (!ta.value.trim()){ toast("Cole o backup primeiro."); return; }
-      if (!requireDb()) return;
-      e.currentTarget.disabled = true;
-      try {
-        const n = await importarJSON(ta.value, subs.checked, (f,t,c)=>{ status.textContent = "Gravando " + c + "… " + f + "/" + t; });
-        closeModal(); toast(n + " registros restaurados.");
-      } catch(err){ e.currentTarget.disabled = false; toast(err.message || "Falha ao restaurar."); }
-    }},"Restaurar")));
-  openModal(md);
 }
 
 /* ============================ modais ============================ */
