@@ -253,6 +253,41 @@ tr.destaque td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   .mvline{grid-template-columns:1fr 84px 60px 26px}
 }
 @media (prefers-reduced-motion: reduce){ *{transition:none !important;animation:none !important} }
+
+/* ------- impressão / PDF ------- */
+#printHead{display:none}
+@media print{
+  @page{ size:A4 landscape; margin:11mm 10mm 13mm; }
+  :root{ --ground:#fff; --surface:#fff; --surface-2:#fff; --ink:#111; --ink-2:#444; --ink-3:#666; --line:#d5d0da; --line-strong:#b9b2c0; }
+  body{ background:#fff; color:#111; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  header.top, #toastRoot, #modalRoot, .toolbar, .actionbar, .no-print, .btn, .seg, .switch { display:none !important; }
+  .wrap{ max-width:none; padding:0 }
+  .page-head{ margin:0 0 10px }
+  .page-head h1{ font-size:17px }
+  .page-head p{ max-width:none; font-size:10.5px }
+  #printHead{ display:block; border-bottom:2px solid #111; padding-bottom:8px; margin-bottom:12px }
+  #printHead .ph-t{ font-family:"Bricolage Grotesque",sans-serif; font-weight:800; font-size:16px; letter-spacing:-.02em }
+  #printHead .ph-s{ font-size:10.5px; color:#444; margin-top:3px }
+  #printHead .ph-f{ font-size:10px; color:#444; margin-top:5px }
+  #printHead .ph-f b{ color:#111 }
+  .tiles{ grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:12px; break-inside:avoid }
+  .tile{ padding:7px 9px; border:1px solid #d5d0da }
+  .tile .k{ font-size:7.5px } .tile .v{ font-size:14px } .tile .m{ font-size:8px }
+  .table-wrap{ overflow:visible !important; max-height:none !important; border:0; border-radius:0 }
+  table{ min-width:0 !important; width:100% !important; font-size:9px }
+  thead{ display:table-header-group }
+  tr{ break-inside:avoid }
+  th{ padding:5px 6px; font-size:7.5px; border-bottom:1px solid #111; background:#fff !important }
+  td{ padding:4px 6px; border-bottom:1px solid #e6e2ea }
+  tbody tr:hover td{ background:transparent !important }
+  tr.grp td{ background:#f2f0f4 !important; font-size:8px; padding:4px 6px }
+  .chip{ font-size:7.5px; padding:1px 4px; border:1px solid #ccc }
+  .code{ font-size:8px }
+  .chart-card{ break-inside:avoid; border:1px solid #d5d0da; padding:10px }
+  .legend{ font-size:8.5px }
+  img{ max-width:22px; height:22px }
+  .bar-cell i{ background:#888 !important }
+}
 </style>
 
 <header class="top">
@@ -275,6 +310,7 @@ tr.destaque td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   </div>
 </header>
 
+<div id="printHead"></div>
 <main class="wrap" id="app"></main>
 <div id="modalRoot"></div>
 <div id="toastRoot"></div>
@@ -318,7 +354,7 @@ const state = {
   db:null, demo:false,
   produtos:[], contagens:[], movimentos:[],
   view:"estoque", abertaId:null, draft:null,
-  filtro:{q:"",cat:"todas",status:"ativos"}, cega:false, resp:"",
+  filtro:{q:"",cat:"todas",status:"ativos",saldo:"todos"}, cega:false, resp:"",
   rel:{ aba:"produto", periodo:"30", de:"", ate:"", ordem:"desc", zerados:true },
   erroBanco:null,
   config:{ leadTime:15, coberturaAlvo:30, janela:30 },
@@ -613,7 +649,7 @@ function reportarErroBanco(erro, colecao){
 
 function bannerErroBanco(){
   const e = state.erroBanco;
-  return el("div",{style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
+  return el("div",{class:"no-print", style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
     + "padding:14px 16px;margin:16px 0 0"},
     el("div",{style:"display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px"},
       el("span",{style:"font-weight:700;color:var(--crit);font-size:13px;letter-spacing:.04em;text-transform:uppercase"}, e.titulo),
@@ -986,7 +1022,7 @@ function render(){
    Sem isso, dá para trabalhar o dia inteiro numa máquina isolada. */
 function avisoSemSincronia(){
   const falha = state.modo === "falha";
-  return el("div",{style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
+  return el("div",{class:"no-print", style:"background:var(--crit-soft);border:1px solid var(--crit);border-radius:var(--radius);"
     + "padding:14px 16px;margin:16px 0 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap"},
     el("span",{style:"font-weight:700;color:var(--crit);font-size:13px;letter-spacing:.04em;text-transform:uppercase"},
       falha ? "Não conectou" : "Sem sincronia"),
@@ -1039,7 +1075,7 @@ function tile(k,v,unit,m,cls){
     el("div",{class:"m"},m));
 }
 function bannerDemo(){
-  return el("div",{class:"banner"},
+  return el("div",{class:"banner no-print"},
     el("span",{class:"tag"},"exemplo"),
     el("p",null,"Catálogo de demonstração, só para você ver o app funcionando. Assim que importar o seu, ele some."),
     el("button",{class:"btn primary", onclick:()=>{ state.view="estoque"; render(); setTimeout(modalImportarProdutos,60); }},"Importar meu catálogo"));
@@ -1052,6 +1088,72 @@ function seletorStatus(){
   sel.value = state.filtro.status;
   sel.addEventListener("change", e => { state.filtro.status = e.target.value; render(); });
   return sel;
+}
+
+/* filtro pelo saldo, não pelo cadastro */
+/* ---- exportar PDF: imprime a tela atual, com os filtros descritos ---- */
+
+const ROTULO_SALDO = { todos:"todo o saldo", com:"só com estoque", zerados:"só zerados",
+                       minimo:"abaixo do mínimo", sem:"nunca contados" };
+const ROTULO_STATUS = { ativos:"só ativos", inativos:"só inativos", todos:"ativos e inativos" };
+
+function descricaoFiltros(){
+  const f = state.filtro, p = [];
+  if (f.q) p.push('busca "' + f.q + '"');
+  p.push("categoria: " + (f.cat === "todas" ? "todas" : f.cat));
+  p.push("cadastro: " + (ROTULO_STATUS[f.status] || f.status));
+  if (state.view === "estoque") p.push("saldo: " + (ROTULO_SALDO[f.saldo || "todos"]));
+  if (state.view === "relatorios"){
+    const per = periodoAtual();
+    p.push("período: " + (per.de || per.ate ? dataBR(per.de) + " a " + dataBR(per.ate) : "completo"));
+    p.push("visão: " + (state.rel.aba === "produto" ? "por produto" : "por data"));
+  }
+  return p;
+}
+
+function exportarPDF(titulo, subtitulo){
+  const ph = $("#printHead");
+  const agora = new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"});
+  ph.innerHTML = "";
+  ph.appendChild(el("div",{class:"ph-t"}, titulo));
+  ph.appendChild(el("div",{class:"ph-s"}, subtitulo + " · emitido em " + agora + (state.resp ? " por " + state.resp : "")));
+  const filtros = descricaoFiltros();
+  ph.appendChild(el("div",{class:"ph-f"}, el("b",null,"Filtros: "), filtros.join("  ·  ")));
+  setTimeout(()=>{ window.print(); }, 60);
+}
+
+function botaoPDF(titulo, subtitulo){
+  return el("button",{class:"btn", onclick:()=>exportarPDF(titulo, subtitulo)},"Exportar PDF");
+}
+
+function seletorSaldo(){
+  const sel = el("select",{class:"sel","aria-label":"Situação do saldo"},
+    el("option",{value:"todos"},"Todo o saldo"),
+    el("option",{value:"com"},"Só com estoque"),
+    el("option",{value:"zerados"},"Só zerados"),
+    el("option",{value:"minimo"},"Abaixo do mínimo"),
+    el("option",{value:"sem"},"Nunca contados"));
+  sel.value = state.filtro.saldo || "todos";
+  sel.addEventListener("change", e => { state.filtro.saldo = e.target.value; render(); });
+  return sel;
+}
+
+/* aplica o filtro de saldo sobre a lista já filtrada por texto/categoria */
+function filtraPorSaldo(lista, s){
+  const f = state.filtro.saldo || "todos";
+  if (f === "todos") return lista;
+  return lista.filter(p => {
+    const contado = (p.id in s.fechado);
+    const fech = s.fechado[p.id] || 0;
+    const bal = isGranel(p) ? 0 : (s.balcao[p.id] || 0);
+    const tot = fech + bal;
+    const min = Number(p.estoqueMin) || 0;
+    if (f === "com") return contado && tot > 0.0005;
+    if (f === "zerados") return contado && tot <= 0.0005;
+    if (f === "minimo") return min > 0 && tot <= min;
+    if (f === "sem") return !contado;
+    return true;
+  });
 }
 
 function toolbar(withCat, extra){
@@ -1091,9 +1193,10 @@ function viewEstoque(){
     el("div",null,
       el("h1",null,"Estoque"),
       el("p",null, s.ref.fechado
-        ? "Saldo apurado na contagem de "+dataHoraBR(s.ref.fechado.aplicadaEm)+", mais os movimentos lançados depois. Clique num produto para abrir a ficha."
+        ? "Saldo apurado na contagem de "+dataHoraBR(s.ref.fechado.aplicadaEm)+", mais os movimentos lançados depois."
         : "Ainda sem contagem aplicada — o saldo começa na primeira contagem do estoque fechado.")),
     el("div",{class:"spacer"}),
+    el("button",{class:"btn", onclick:()=>exportarPDF("Estoque Fini","Posição de estoque")},"Exportar PDF"),
     el("button",{class:"btn", onclick:()=>exportarCSV(prods.filter(p=>p.ativo!==false), s)},"Exportar CSV"),
     el("button",{class:"btn", onclick:modalImportarProdutos},"Importar lista"),
     el("button",{class:"btn primary", onclick:()=>fichaProduto(null)},"Novo produto")));
@@ -1130,14 +1233,21 @@ function viewEstoque(){
     : semContagem > 0 ? tile("Sem contagem", String(semContagem), "SKUs", "nunca apurados", "alert")
     : tile("Cobertura", "100", "%", "todos os SKUs contados")));
 
-  box.appendChild(toolbar(true, [seletorStatus()]));
+  box.appendChild(toolbar(true, [seletorStatus(), seletorSaldo()]));
 
-  const lista = aplicaFiltro(ordenados(prods));
+  const lista = filtraPorSaldo(aplicaFiltro(ordenados(prods)), s);
   if (!lista.length){
-    box.appendChild(el("div",{class:"empty"}, el("h3",null,"Nada encontrado"),
-      el("p",null,"Ajuste a busca, a categoria ou o filtro de ativos.")));
+    box.appendChild(el("div",{class:"empty"},
+      el("h3",null,"Nada encontrado"),
+      el("p",null, state.filtro.saldo === "com"
+        ? "Nenhum produto com saldo. O saldo só existe depois de uma contagem aplicada."
+        : "Ajuste a busca, a categoria ou os filtros.")));
     box.appendChild(cardManutencao());
     return box;
+  }
+  if (state.filtro.saldo !== "todos"){
+    box.appendChild(el("p",{style:"font-size:12.5px;color:var(--ink-2);margin:0 2px 10px;font-weight:600"},
+      lista.length + " de " + aplicaFiltro(ordenados(prods)).length + " produtos neste filtro"));
   }
 
   const tbody = el("tbody"); let catAtual = null;
@@ -1842,6 +1952,8 @@ function viewRelatorios(){
       el("h1",null,"Relatórios de saída"),
       el("p",null,"O que saiu, por produto e por dia — separado por motivo, para você ver o que gira, o que encalha e quanto se perde no caminho.")),
     el("div",{class:"spacer"}),
+    el("button",{class:"btn", onclick:()=>exportarPDF("Relatório de saída — Fini",
+      state.rel.aba === "produto" ? "O que mais e o que menos sai" : "Saída por data e motivo")},"Exportar PDF"),
     el("div",{class:"seg"},
       segBtn("produto","Por produto"), segBtn("data","Por data"))));
 
@@ -2930,7 +3042,7 @@ function atualizaProgresso(itens){
 const SENHA_EMERGENCIA = () => String((window.FINI_CONFIG && window.FINI_CONFIG.senhaEmergencia) || "FINI2026");
 
 function cardManutencao(){
-  const card = el("div",{style:"margin-top:34px;padding-top:16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap"});
+  const card = el("div",{class:"no-print", style:"margin-top:34px;padding-top:16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap"});
   card.appendChild(el("span",{style:"font-size:12px;color:var(--ink-3);flex:1;min-width:220px;max-width:64ch"},
     "Zerar apaga produtos, contagens e movimentos de uma vez, para todo mundo. É só para emergência — pede senha e baixa um backup antes."));
   card.appendChild(el("button",{class:"btn danger", onclick:modalZerar},"Zerar estoque"));
